@@ -274,6 +274,16 @@ def copies_prompt(text: str, prompt: str, run: int = ECHO_RUN) -> bool:
     return any(" ".join(mine[i:i + run]) in haystack for i in range(len(mine) - run + 1))
 
 
+def invented_scores(memo: str, scorecards: list[Scorecard]) -> list[str]:
+    """Claims like "developer_friction 9" in the memo that no scorecard backs: a score that does not exist, or another number.
+    qwen3:4b wrote "developer_friction: 9" for a technology without a Hacker News card, and the judge repeated it as a fact.
+    Naming a score without a number ("developer_friction is unknown") is fine."""
+    have = {name: value for c in scorecards if c["status"] == "scored" for name, value in c["scores"].items() if value is not None}
+    every = {name for names in SCORES_BY_LANE.values() for name in names} | COMPUTED_NAMES
+    claims = re.findall(r"\b(" + "|".join(sorted(every)) + r")\b[^\w\n]{0,12}(?:is |of |at |was )?(\d+)", memo)
+    return [f"{name} {number}" for name, number in claims if have.get(name) != int(number)]
+
+
 async def write_risk_memo(llm, candidate: Candidate, scorecards: list[Scorecard]) -> RiskMemo:
     """The model fills the three memo fields; `fatal_flaws_found` comes from find_fatal_flaws, and the model is told its result.
     A memo that copies the prompt or leaves a field empty raises, so the judge is told "not reviewed" instead of reading junk."""
@@ -290,6 +300,8 @@ async def write_risk_memo(llm, candidate: Candidate, scorecards: list[Scorecard]
     memo = " ".join(p if p[-1] in ".!?" else p + "." for p in parts)
     if copies_prompt(memo, system):
         raise ValueError("the model copied its instructions instead of writing a risk memo")
+    if invented := invented_scores(memo, scorecards):
+        raise ValueError("the risk memo states scores that no scorecard has: " + ", ".join(invented))
     return RiskMemo(fatal_flaws_found=bool(flaws), memo=memo)
 
 

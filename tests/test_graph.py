@@ -470,6 +470,17 @@ async def hostile():
             assert why in str(error), error
     ok_quote = three("The GitHub agent has NO USABLE DATA, which is an unknown.", "Maturity is unknown.", "Production use must be shown.")
     assert (await rg.write_risk_memo(FakeChat({"risk_memo": ok_quote}), cand("RSS feeds"), [card("rss")]))["memo"].startswith("The GitHub agent")
+    # ... and so is a memo that states a score nobody gave (qwen3:4b wrote "developer_friction: 9" for a technology with no HN card)
+    gh_card = card("github", developer_velocity=9, project_health=6, licensing_risk=1)
+    for claim in ("developer_friction: 9 is high.", "The developer_velocity of 4 is low.", "licensing_risk (7) matters."):
+        assert rg.invented_scores(claim, [gh_card]), claim
+    for fine in ("developer_velocity 9 is high.", "Hacker News has NO USABLE DATA so developer_friction is unknown.", "project_health of 6, licensing_risk is 1."):
+        assert rg.invented_scores(fine, [gh_card]) == [], fine
+    try:
+        await rg.write_risk_memo(FakeChat({"risk_memo": three("developer_friction: 9 is the biggest risk.", "Unknown.", "Proof.")}), cand("GitHub"), [gh_card])
+        raise AssertionError("should have raised")
+    except ValueError as error:
+        assert "developer_friction 9" in str(error), error
     assert rg.copies_prompt("a b c d e f g h i j k", "x a b c d e f g h i j y") and not rg.copies_prompt("a b c d e f g h i", "a b c d e f g h i")
     assert not rg.copies_prompt("a short memo", prompt) and not rg.copies_prompt("", prompt), "short quotes and empty text are not copies"
     # and the node turns the error into a recorded problem, with an empty memo so the judge is told "not reviewed"
