@@ -449,16 +449,35 @@ async def hostile():
     assert "fatal flaws found: YES" in judge_user and "Bad. Worse. Worst." in judge_user
     assert "GitHub agent: NO USABLE DATA" in judge_user and "unknown, not good news" in judge_user
     assert "Package registries agent: NO USABLE DATA" in judge_user, "the fifth source is named too when it has nothing"
-    # the skeptic: the model writes the memo, CODE decides fatal_flaws_found (a model once invented a "friction 9")
-    chat = FakeChat({"risk_memo": {"memo": " m ", "fatal_flaws_found": True}})   # a model claiming a flaw is ignored
+    # the skeptic: the model fills three fields that CODE joins; CODE decides fatal_flaws_found (a model once invented a "friction 9")
+    three = lambda a="r1", b="r2", c="r3", **extra: {"biggest_risk": a, "second_risk_or_unknown": b, "what_must_be_true": c, **extra}  # noqa: E731
+    chat = FakeChat({"risk_memo": three(" Big risk ", "Unknown.", "Proof!", fatal_flaws_found=True, memo="ignored")})   # a claimed flaw is ignored
     risk = await rg.write_risk_memo(chat, cand("RSS feeds"), [card("rss")])
-    assert risk == {"fatal_flaws_found": False, "memo": "m"}
+    assert risk == {"fatal_flaws_found": False, "memo": "Big risk. Unknown. Proof!"}, risk   # trimmed, full stop added when missing
     assert "Fatal flaws found by code: none." in chat.seen[0][1][1][1]
-    chat = FakeChat({"risk_memo": {"memo": "Licence. Unknowns. Clarify."}})   # a model that says nothing about it is overruled
+    chat = FakeChat({"risk_memo": three("Licence.", "Unknowns.", "Clarify.")})   # a model that says nothing about it is overruled
     risk = await rg.write_risk_memo(chat, cand("GitHub"), [card("github", licensing_risk=9), card("rss")])
-    assert risk["fatal_flaws_found"] is True
+    assert risk["fatal_flaws_found"] is True and risk["memo"] == "Licence. Unknowns. Clarify."
     assert "licensing_risk is 9" in chat.seen[0][1][1][1] and "put them first" in chat.seen[0][1][1][1]
-    print("OK real LLM functions: cleaning, errors, polarity/unknown lanes in the prompts")
+    # a real scan once had qwen3:4b copy the prompt's instructions as the "memo" for EVERY technology: that is an error now
+    prompt = ai_service.load_prompt("antihype")
+    copied = three("The strongest reason not to use it, naming the score or the fact it comes from.", "Fine.", "Fine.")
+    for reply, why in ((copied, "copied its instructions"), (three("A.", "", "C."), "left a part")):
+        try:
+            await rg.write_risk_memo(FakeChat({"risk_memo": reply}), cand("RSS feeds"), [card("rss")])
+            raise AssertionError("should have raised")
+        except ValueError as error:
+            assert why in str(error), error
+    ok_quote = three("The GitHub agent has NO USABLE DATA, which is an unknown.", "Maturity is unknown.", "Production use must be shown.")
+    assert (await rg.write_risk_memo(FakeChat({"risk_memo": ok_quote}), cand("RSS feeds"), [card("rss")]))["memo"].startswith("The GitHub agent")
+    assert rg.copies_prompt("a b c d e f g h i j k", "x a b c d e f g h i j y") and not rg.copies_prompt("a b c d e f g h i", "a b c d e f g h i")
+    assert not rg.copies_prompt("a short memo", prompt) and not rg.copies_prompt("", prompt), "short quotes and empty text are not copies"
+    # and the node turns the error into a recorded problem, with an empty memo so the judge is told "not reviewed"
+    state = rg.initial_state(cand("RSS feeds"))
+    state["scorecards"] = [card("rss")]
+    node = await rg.anti_hype_node(state, llm=FakeChat({"risk_memo": copied}))
+    assert node["risk_memo"] == "" and node["fatal_flaws_found"] is False and "copied its instructions" in node["errors"][0], node
+    print("OK real LLM functions: cleaning, errors, polarity/unknown lanes in the prompts, memo fields and the copied-prompt guard")
 
     # the Package registries agent: the spec's three keys, scores 1-10, confidence decided by the data, caps and unknowns in code
     def reg_payload(*metas):
@@ -488,7 +507,7 @@ async def hostile():
     # the whole graph with the real nodes and a scripted model: happy path, then a model that times out
     replies = {"scorecard_rss": {"summary": "InfoQ and CNCF report production use.", "enterprise_traction": 8, "maturity": 9,
                                  "confidence": "high"},
-               "risk_memo": {"memo": "None. None. None.", "fatal_flaws_found": False},
+               "risk_memo": three("None.", "None.", "None."),
                "verdict": {"justification": "Mature.", "category": "ADOPT", "confidence": "high", "relevance": "HIGH",
                            "business_value": "Observability for customers."}}
     graph = rg.build_graph(FakeChat(replies))

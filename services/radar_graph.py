@@ -21,6 +21,7 @@ The prompts are files in prompts/ (rate_<source>.md, antihype.md, judge.md), edi
 """
 import asyncio
 import operator
+import re
 from functools import partial
 from typing import Annotated, Any, Literal, NotRequired, TypedDict, get_args
 
@@ -254,23 +255,42 @@ def find_fatal_flaws(scorecards: list[Scorecard]) -> list[str]:
     return flaws
 
 
+# The memo is three named fields that code joins into 3 sentences. With a single free-text "memo" field, qwen3:4b copied the
+# three numbered instructions of the prompt word for word for EVERY technology of a real scan, so nothing was ever reviewed.
+MEMO_FIELDS = ("biggest_risk", "second_risk_or_unknown", "what_must_be_true")
 MEMO_SCHEMA = {
     "title": "risk_memo",
     "type": "object",
-    "properties": {"memo": {"type": "string"}},
-    "required": ["memo"],
+    "properties": {name: {"type": "string"} for name in MEMO_FIELDS},
+    "required": list(MEMO_FIELDS),
 }
+ECHO_RUN = 10   # this many words in a row that are also in the prompt: the model copied its instructions
+
+
+def copies_prompt(text: str, prompt: str, run: int = ECHO_RUN) -> bool:
+    """True when `text` repeats `run` or more consecutive words of `prompt`. A real memo about a technology never does."""
+    words = lambda s: re.findall(r"[a-z0-9]+", s.lower())  # noqa: E731
+    haystack, mine = " ".join(words(prompt)), words(text)
+    return any(" ".join(mine[i:i + run]) in haystack for i in range(len(mine) - run + 1))
 
 
 async def write_risk_memo(llm, candidate: Candidate, scorecards: list[Scorecard]) -> RiskMemo:
-    """The model writes the memo; `fatal_flaws_found` comes from find_fatal_flaws, and the model is told its result."""
+    """The model fills the three memo fields; `fatal_flaws_found` comes from find_fatal_flaws, and the model is told its result.
+    A memo that copies the prompt or leaves a field empty raises, so the judge is told "not reviewed" instead of reading junk."""
     flaws = find_fatal_flaws(scorecards)
-    checks = ("Fatal flaws found by code (facts, do not dispute them, and put them first in the memo):\n"
+    checks = ("Fatal flaws found by code (facts, do not dispute them, and put them first in biggest_risk):\n"
               + "\n".join(f"- {f}" for f in flaws)) if flaws else "Fatal flaws found by code: none."
     user = (f"Technology: {candidate['name']}\nWhat it is: {candidate.get('what', '')}\n\n"
             f"Scorecards from the source agents:\n{format_scorecards(scorecards)}\n\n{checks}")
-    answer = await _ask(llm, MEMO_SCHEMA, load_prompt("antihype"), user)
-    return RiskMemo(fatal_flaws_found=bool(flaws), memo=str(answer.get("memo", "")).strip())
+    system = load_prompt("antihype")
+    answer = await _ask(llm, MEMO_SCHEMA, system, user)
+    parts = [str(answer.get(name, "")).strip() for name in MEMO_FIELDS]
+    if not all(parts):
+        raise ValueError("the model left a part of the risk memo empty")
+    memo = " ".join(p if p[-1] in ".!?" else p + "." for p in parts)
+    if copies_prompt(memo, system):
+        raise ValueError("the model copied its instructions instead of writing a risk memo")
+    return RiskMemo(fatal_flaws_found=bool(flaws), memo=memo)
 
 
 VERDICT_SCHEMA = {

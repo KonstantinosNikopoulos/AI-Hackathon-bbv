@@ -183,7 +183,8 @@ class FakeStructured:
             return {"summary": f"{title} says fine", "confidence": "medium",
                     **{n: 2 if n in RISK_SCORES else 8 if n == "maturity" else 6 for n in names}}
         if title == "risk_memo":
-            return {"memo": "Risk one. Risk two. Risk three."}   # the fatal-flaw boolean is computed by code
+            return {"biggest_risk": "Risk one.", "second_risk_or_unknown": "Risk two.",   # the fatal-flaw boolean is computed by code
+                    "what_must_be_true": "Risk three."}
         category = "ADOPT" if tech in ("ty", "OpenTelemetry", "MCP", "Blazor") else "HOLD" if tech == "Kubernetes" else "ASSESS"
         assert "licensing_risk is above 7" in system, "the decision matrix must be written into the judge prompt"
         return {"justification": "Because of <scores>.", "category": category, "confidence": "medium",

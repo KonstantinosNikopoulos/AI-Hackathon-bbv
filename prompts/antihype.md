@@ -5,11 +5,11 @@ How to read the scorecards:
 - Only talk about scores that appear in the scorecards, and name the right agent. Never invent a score, a number or a source.
 - A source marked "NO USABLE DATA" is unknown. Unknown is a risk in itself, not good news.
 - A score from a scorecard marked "low confidence" is weak evidence: mention it as uncertain, do not build your argument on it. The exception is licensing_risk, which is computed by code (AGPL, SSPL and similar are 9, no license is 7).
-- The message ends with the fatal flaws that code found. They are facts. If there are any, they come first in your memo.
+- The message ends with the fatal flaws that code found. They are facts. If there are any, they come first in "biggest_risk".
 
-Write "memo": exactly 3 sentences.
-1. The biggest risk, naming the score or fact it comes from (a fatal flaw found by code, if there is one).
-2. The second biggest risk or the biggest unknown.
-3. What would have to be true before a careful engineering company could rely on it.
+Fill in three fields. Each one is ONE sentence about THIS technology, written from the scorecards in the message. Never copy these instructions.
+- "biggest_risk": the strongest reason not to use it, naming the score or the fact it comes from.
+- "second_risk_or_unknown": the second biggest risk, or the biggest unknown (a source marked "NO USABLE DATA" is an unknown).
+- "what_must_be_true": what would have to be true before a careful engineering company could rely on it.
 
 Answer only with JSON that matches the schema.
