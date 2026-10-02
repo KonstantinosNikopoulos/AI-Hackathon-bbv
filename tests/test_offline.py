@@ -186,7 +186,7 @@ class FakeStructured:
             return {"biggest_risk": "Risk one.", "second_risk_or_unknown": "Risk two.",   # the fatal-flaw boolean is computed by code
                     "what_must_be_true": "Risk three."}
         category = "ADOPT" if tech in ("ty", "OpenTelemetry", "MCP", "Blazor") else "HOLD" if tech == "Kubernetes" else "ASSESS"
-        assert "licensing_risk is above 7" in system, "the decision matrix must be written into the judge prompt"
+        assert "licensing_risk above 7" in system and "own repository is archived" in system, "the rules of the guards must be written into the judge prompt"
         return {"justification": "Because of <scores>.", "category": category, "confidence": "medium",
                 "relevance": "HIGH", "business_value": "IoT & medtech"}
 
@@ -213,12 +213,11 @@ techs = {t["name"]: t for t in result["technologies"]}
 print("TECHNOLOGIES:", *[f"  {t['name']}: {t['ring']} ({t['quadrant']}) mentions={t['mentions']} notes={t['rule_notes']}"
                          for t in result["technologies"]], sep="\n")
 assert "AI" not in techs, "generic word should be dropped"
-assert techs["ty"]["ring"] == "Assess" and any("young" in n or "days old" in n for n in techs["ty"]["rule_notes"]), "young repo rule"
-assert techs["ty"]["llm_ring"] == "Trial" and any("no reliable RSS data" in n for n in techs["ty"]["rule_notes"]), "matrix: Adopt needs maturity"
-assert techs["OpenTelemetry"]["ring"] == "Trial" and techs["OpenTelemetry"]["llm_ring"] == "Trial", "no RSS data -> max Trial"
-assert techs["MCP"]["ring"] == "Trial" and techs["MCP"]["llm_ring"] == "Trial", "a single RSS article is low confidence -> max Trial"
-assert techs["Blazor"]["ring"] == "Trial" and techs["Blazor"]["llm_ring"] == "Adopt", "Adopt needs 3+ mentions"
-assert any("3+ mentions" in n for n in techs["Blazor"]["rule_notes"])
+assert techs["ty"]["ring"] == "Assess" and techs["ty"]["llm_ring"] == "Adopt", "a repository only 40 days old: at most Assess"
+assert techs["ty"]["rule_notes"] == ["Adopt → Assess: first seen only 40 days ago, nothing is proven yet"], techs["ty"]["rule_notes"]
+for name in ("OpenTelemetry", "MCP", "Blazor"):   # the signals of this week show nothing about their age: not provably established
+    assert techs[name]["ring"] == "Trial" and techs[name]["llm_ring"] == "Adopt", name
+    assert techs[name]["rule_notes"] == ["Adopt → Trial: ADOPT needs years of use at scale, here the standing is unknown (nothing shows how old it is)"]
 assert techs["Kubernetes"]["ring"] == "Hold" and techs["Kubernetes"]["mentions"] == 1, "model ring used as is"
 assert set(techs) == {"OpenTelemetry", "MCP", "ty", "Kubernetes", "Blazor"}, "only technologies found in the signals"
 

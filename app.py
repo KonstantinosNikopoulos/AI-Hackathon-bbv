@@ -41,8 +41,8 @@ PROMPT_LABELS = {
     "Rating agent: GitHub": "rate_github", "Rating agent: Y Combinator": "rate_ycombinator",
     "Rating agent: Hacker News": "rate_hackernews", "Rating agent: RSS feeds": "rate_rss",
     "Rating agent: Package registries (npm, PyPI, Maven Central, Docker Hub)": "rate_packages",
-    "Anti-hype agent (looks for reasons to reject)": "antihype", "Judge (decision matrix, picks the ring)": "judge",
-    "Classic rating prompt (single prompt, not used by the agents)": "classify",
+    "Anti-hype agent (looks for reasons to reject)": "antihype", "Judge (new and unproven technologies: reads the agents, picks the ring)": "judge",
+    "Single prompt (established technologies: rated directly, without the agents)": "classify",
 }
 
 
@@ -310,6 +310,10 @@ with tab_details:
                     st.write(f"**For bbv:** {t['business_value']}")
                 st.write(f"**Confidence:** {t['confidence']} · **Mentions:** {t['mentions']} from "
                          f"{len(t['sources'])} source(s)")
+                if t.get("standing"):
+                    how = ("directly by the single prompt, because it is established" if t.get("route") == "direct"
+                           else "by the source agents, a skeptic and a judge, because it is not established")
+                    st.caption(f"Standing: {t['standing']} · rated {how}")
                 for note in t.get("rule_notes", []):
                     st.caption(f"Rule applied: {note}")
                 if t.get("scorecards"):

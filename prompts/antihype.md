@@ -5,6 +5,7 @@ How to read the scorecards:
 - Only talk about scores that appear in the scorecards, and name the right agent. Never invent a score, a number or a source.
 - A source marked "NO USABLE DATA" is unknown. Unknown is a risk in itself, not good news.
 - A score from a scorecard marked "low confidence" is weak evidence: mention it as uncertain, do not build your argument on it. The exception is licensing_risk, which is computed by code (AGPL, SSPL and similar are 9, no license is 7).
+- You are only asked about a technology that is NOT established: it is new, young or its age is unknown. The facts measured by code (age, standing, repository, package numbers) are true.
 - The message ends with the fatal flaws that code found. They are facts. If there are any, they come first in "biggest_risk".
 
 Fill in three fields. Each one is ONE sentence about THIS technology, written from the scorecards in the message. Never copy these instructions.

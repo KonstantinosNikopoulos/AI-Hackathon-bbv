@@ -22,6 +22,9 @@ from services import ai_service  # noqa: E402
 spec = importlib.util.spec_from_file_location("run_gold", os.path.join(ROOT, "eval", "run_gold.py"))   # "eval" is not a package name
 rg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rg)
+spec = importlib.util.spec_from_file_location("variants", os.path.join(ROOT, "eval", "variants.py"))
+variants = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(variants)
 
 # ------------------------------------------------------------------ the gold file
 items = rg.load_gold()
@@ -39,6 +42,14 @@ assert {i["quadrant"] for i in items} == set(config.QUADRANTS), "every quadrant 
 assert [i["name"] for i in rg.load_gold(rings=["Hold"], limit=2)] == ["Python 2", "AngularJS"]
 assert len(rg.load_gold(limit=1)) == 4 and [i["name"] for i in rg.load_gold(names={"git"})] == ["Git"]
 print("OK gold file: 4 rings, every quadrant, unique keys, a reason, a source and a check for each item")
+
+# the held-out list: drawn by rules (eval/build_heldout.py), never the same technologies as the gold file, every ring, a check for each
+held = rg.load_gold(os.path.join(ROOT, "eval", "heldout_radar.json"))
+assert {i["ring"] for i in held} == set(config.RINGS) and len(held) >= 40, {r: sum(1 for i in held if i["ring"] == r) for r in config.RINGS}
+assert not {i["key"] for i in held} & {i["key"] for i in items} and not {i["repo"].lower() for i in held if i["repo"]} & {i["repo"].lower() for i in items if i["repo"]}
+assert len({i["key"] for i in held}) == len(held) and all(i["check"]["type"] in CHECKS and i["source"].startswith("https://") and i["fact"] for i in held)
+assert all(i["quadrant"] in config.QUADRANTS and i["basis"] in BASES for i in held) and all(i["key"] == i["name"].lower() for i in held)
+print("OK held-out file: other technologies than the gold file, every ring, a check for each item")
 
 # ------------------------------------------------------------------ evidence collection with fake answers
 assert rg.mentions("Python 2 is dead", ["Python 2"]) and not rg.mentions("Python 3 is here", ["Python 2"]) and rg.mentions("Postgres 17", ["PostgreSQL", "Postgres"])
@@ -61,7 +72,7 @@ class Resp:
 def fake_get(url, params=None, headers=None, timeout=None):
     CALLS.append(url)
     if "api.github.com/repos/foo/bar" in url:
-        return Resp({"name": "bar", "full_name": "foo/bar", "html_url": "https://github.com/foo/bar", "description": "A bar", "stargazers_count": 5000,
+        return Resp({"name": "bar", "full_name": "foo/bar", "html_url": "https://github.com/foo/bar", "description": "A bar", "stargazers_count": 50000,
                      "language": "Go", "topics": [], "created_at": (NOW - timedelta(days=3000)).isoformat() + "T00:00:00Z", "pushed_at": NOW.isoformat() + "T00:00:00Z",
                      "forks_count": 10, "open_issues_count": 2, "license": {"spdx_id": "MIT"}, "archived": False})
     if "hn.algolia.com" in url:
@@ -110,11 +121,14 @@ class Structured:
 
     async def ainvoke(self, messages):
         (_, system), (_, user) = messages
-        title, tech = self.schema["title"], user.splitlines()[0].replace("Technology: ", "")
+        title, tech = self.schema.get("title", "classify"), user.splitlines()[0].replace("Technology: ", "")
         if title.startswith("scorecard_"):
             return {"summary": "fine", "confidence": "high", **{n: 8 for n in self.schema["properties"] if n not in ("summary", "confidence")}}
         if title == "risk_memo":
             return {"biggest_risk": "Risk one.", "second_risk_or_unknown": "Risk two.", "what_must_be_true": "Risk three."}
+        if title == "classify":   # an established technology is rated by the single prompt
+            return {"quadrant": "Tools", "ring": "Adopt" if tech in self.adopt else "Hold", "summary": "s", "reason": "j", "confidence": "high",
+                    "relevance": "HIGH", "business_value": "b"}
         return {"justification": "j", "category": "ADOPT" if tech in self.adopt else "HOLD", "confidence": "high", "relevance": "HIGH", "business_value": "b"}
 
 
@@ -132,7 +146,9 @@ cands = [rg.build_candidate(g, first if g["name"] == "Bar" else {"evidence": [],
 ratings = rg.rate_agents(cands, FakeChat(adopt={"Bar", "Mid"}), parallel=2)
 outcomes = [rg.outcome(g, c, r) for g, c, r in zip(gold, cands, ratings)]
 assert [(o["name"], o["predicted"]) for o in outcomes] == [("Bar", "Adopt"), ("Old", "Assess"), ("Mid", "Assess")], outcomes   # no data -> Assess
-assert outcomes[0]["scored_lanes"] and outcomes[1]["lanes"] == [] and outcomes[0]["memo"] == "Risk one. Risk two. Risk three."
+assert ratings[0]["route"] == "direct" and outcomes[0]["scored_lanes"] == {} and outcomes[0]["memo"] == "", "a widespread technology goes straight to the judge"
+assert outcomes[1]["lanes"] == []
+assert outcomes[0]["notes"] == [] and "Adopt" == outcomes[0]["llm_ring"]
 outcomes.append(rg.outcome(gold[0], cands[0], RuntimeError("model down")))
 assert outcomes[-1]["predicted"] is None and "model down" in outcomes[-1]["error"]
 summary = rg.summarize(outcomes)
@@ -148,11 +164,94 @@ rg.save_result(dict(meta, model="other:2b", mode="classic", seconds=4.0), outcom
 table = rg.compare(folder)
 assert "fake:1b/age" in table and "other:2b/cla" in table and "Assess x" in table and "exact ring" in table and "seconds per technology" in table, table
 assert rg.compare(os.path.join(tmp, "empty")).startswith("no saved results")
+rg.save_result(dict(meta, gold="heldout", rules="v2", seconds=6.0), outcomes[:3], rg.summarize(outcomes[:3]), folder)
+assert "fake:1b/age/v2" in rg.compare(folder), "a labelled run is a column of its own"
+only = rg.compare(folder, gold="heldout")
+assert "fake:1b/age/v2" in only and "other:2b" not in only, "compare(gold=...) keeps only the results for that list"
+assert "heldout-fake-1b-agents-v2-" in " ".join(os.listdir(folder)), os.listdir(folder)
 llm = types.SimpleNamespace(chat_json=lambda system, user, schema: {"quadrant": "Tools", "ring": "Adopt", "summary": "s", "reason": "r", "business_value": "b",
                                                                   "relevance": "HIGH", "confidence": "high"})
 classic = rg.rate_classic(cands[:1], llm)
 assert rg.outcome(gold[0], cands[0], classic[0])["predicted"] == "Adopt"
 print("OK rating: agents and classic mode, failures counted, report, saved results and the side by side comparison")
+
+# rescoring: the SAME model answers, the CURRENT rules (a change of the rules is measured without asking the model again)
+small = {"evidence": [{"source": "GitHub", "title": "foo/small", "url": "https://github.com/foo/small", "text": "t", "date": "2016-01-01",
+                       "meta": {"name": "small", "full_name": "foo/small", "stars": 300, "created_at": "2016-01-01", "pushed_at": NOW.isoformat(),
+                                "license": "MIT", "archived": False, "forks": 1, "open_issues": 1}}], "own_repos": ["https://github.com/foo/small"], "errors": []}
+json.dump(small, open(os.path.join(tmp, "small.json"), "w", encoding="utf-8"))
+small_item = dict(ITEM, name="Small", key="small", ring="Trial", basis="formal", repo=None)
+small_rating = rg.rate_agents([rg.build_candidate(small_item, small)], FakeChat(adopt={"Small"}), parallel=1)
+small_outcome = rg.outcome(small_item, rg.build_candidate(small_item, small), small_rating[0])
+assert small_outcome["llm_ring"] == "Adopt" and small_outcome["predicted"] == "Trial" and small_outcome["memo"] == "Risk one. Risk two. Risk three."
+assert "ADOPT needs years of use at scale" in small_outcome["notes"][0], "a small technology gets the skeptic, and its ADOPT is capped by the guards"
+saved = {"meta": {"model": "m", "mode": "classic"},
+         "outcomes": [{"name": "Small", "expected": "Trial", "basis": "formal", "lanes": [], "predicted": "Adopt", "llm_ring": "Adopt"},
+                      {"name": "Bar", "expected": "Adopt", "basis": "ubiquity", "lanes": [], "predicted": "Adopt", "llm_ring": "Adopt"},
+                      {"name": "Down", "expected": "Hold", "basis": "lifecycle", "lanes": [], "predicted": None, "error": "RuntimeError: x"}]}
+again = rg.rescore(saved, [small_item, dict(good, name="Bar"), dict(ITEM, name="Down", key="down")], directory=tmp)
+assert [(o["name"], o["predicted"]) for o in again] == [("Small", "Trial"), ("Bar", "Adopt"), ("Down", None)], again
+assert again[0]["llm_ring"] == "Adopt" and "ADOPT needs years of use at scale" in again[0]["notes"][0] and again[1]["notes"] == []
+assert again[2] == saved["outcomes"][2], "a failed call stays failed"
+
+# the variants: the table that combines three small questions, and what each variant reads
+V = variants
+assert V.combine("retired", "widespread", "stable") == "Hold" and V.combine("active", "widespread", "stable") == "Adopt"
+assert V.combine("active", "widespread", "young") == "Trial" and V.combine("active", "established", "stable") == "Trial"
+assert V.combine("active", "niche", "stable") == "Assess" and V.combine("active", "unproven", "stable") == "Assess"
+assert V.combine("active", "widespread", "experimental") == "Assess" and V.combine("active", "established", "experimental") == "Assess"
+assert set(V.QUESTIONS) == {"lifecycle", "adoption", "maturity"} and all(V.question_schema(n, o)["properties"]["answer"]["enum"] == o for n, (_, o) in V.QUESTIONS.items())
+assert set(V.RING_OF_ADOPTION) == set(V.QUESTIONS["adoption"][1]) and set(V.RING_CAP_OF_MATURITY) == set(V.QUESTIONS["maturity"][1])
+seen = []
+
+
+class VariantChat:
+    def __init__(self, lifecycle="active"):
+        self.lifecycle = lifecycle
+
+    def with_structured_output(self, schema, method=None):
+        title, lifecycle = schema.get("title", "classify"), self.lifecycle
+
+        class Runnable:
+            async def ainvoke(self, messages):
+                (_, system), (_, user) = messages
+                seen.append((title, system, user))
+                if title == "verdict":
+                    return {"justification": "j", "category": "TRIAL", "confidence": "high", "relevance": "HIGH", "business_value": "b"}
+                if title == "classify":
+                    return {"quadrant": "Tools", "ring": "Adopt", "summary": "s", "reason": "r", "business_value": "b", "relevance": "HIGH", "confidence": "high"}
+                return {"reason": "r", "answer": {"lifecycle": lifecycle, "adoption": "widespread", "maturity": "stable"}[title.removeprefix("question_")]}
+
+        return Runnable()
+
+
+one = cands[:1]
+classic_facts = V.rate_all(one, VariantChat(), "classicfacts")[0]
+assert classic_facts["answer"]["ring"] == "Adopt"
+title, system, user = seen[-1]
+assert system == ai_service.classify_system() and user.startswith(ai_service.classify_message(cands[0])) and "Facts measured by code" in user
+seen.clear()
+asked = V.rate_all(one, VariantChat(), "questions")[0]
+assert asked["answer"]["ring"] == "Adopt" and asked["answer"]["reason"] == "lifecycle active; adoption widespread; maturity stable"
+assert sorted(t for t, _, _ in seen) == ["question_adoption", "question_lifecycle", "question_maturity"] and len({u for _, _, u in seen}) == 1, \
+    "three small questions, each reading the same whole picture"
+assert V.rate_all(one, VariantChat("retired"), "questions")[0]["answer"]["ring"] == "Hold"
+
+
+class Broken(VariantChat):
+    def with_structured_output(self, schema, method=None):
+        runnable = super().with_structured_output(schema, method)
+
+        class Wrong:
+            async def ainvoke(self, messages):
+                return {"reason": "r", "answer": "maybe"}
+        return Wrong() if schema["title"] == "question_adoption" else runnable
+
+
+assert isinstance(V.rate_all(one, Broken(), "questions")[0], ValueError), "an invalid answer is an error, never a guessed ring"
+fresh = rg.outcome(gold[0], cands[0], V.rate_all(one, VariantChat(), "questions")[0])
+assert fresh["predicted"] == "Adopt" and fresh["reason"].startswith("lifecycle active")
+print("OK rescoring with the current rules, and the variants: the table of three questions, what each variant reads, invalid answers fail")
 
 # ------------------------------------------------------------------ verifying the labels against live sources (faked here)
 def verify_get(url, params=None, headers=None, timeout=None):

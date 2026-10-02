@@ -15,7 +15,7 @@ if "ollama" not in sys.modules:
         sys.modules["ollama"] = types.SimpleNamespace(Client=lambda **kw: None)
 
 import config  # noqa: E402
-from services import ai_service, radar_graph as rg  # noqa: E402
+from services import ai_service, radar_graph as rg, radar_record as rr  # noqa: E402
 from services.radar_lanes import (LANES, LANE_SOURCE, RISK_SCORES, SCORES_BY_LANE, _count, cap_confidence,  # noqa: E402
                                   clean_scores, lane_facts, lane_schema, license_risk)
 
@@ -173,65 +173,55 @@ assert [_count(n) for n in (None, 0, 999, 1000, 1234, 999_499, 999_999, 12_100_0
     == ["unknown", "0", "999", "1K", "1.2K", "999.5K", "1M", "12.1M", "1B", "11.4B"], "sizes, never '1000K'"
 print("OK package registry facts: trend, caps, unknowns, confidence from the data, the spec's schema")
 
-# ------------------------------------------------------------------ decision matrix (code, not prompt)
-def matrix(category, cards, fatal=False):
-    verdict, notes = rg.enforce_matrix(dict(VERDICT, category=category), cards, fatal)
-    return verdict["category"], notes
+# ------------------------------------------------------------------ the graph hands the judge FACTS; the guards live in radar_record
+for gone in ("enforce_matrix", "find_fatal_flaws", "flat_scores", "ADOPT_MIN_MATURITY", "ASSESS_CAP_IF_ANY_RISK_AT_LEAST",
+             "FATAL_IF_HEALTH_OR_MATURITY_AT_MOST", "HOLD_IF_LICENSING_RISK_ABOVE"):
+    assert not hasattr(rg, gone), f"{gone}: a veto from the scores of a model (friction, hype, maturity) is gone, see tests/test_record.py"
+assert rg.matrix_rules is rr.matrix_rules and "above 7" in rg.judge_system() and "archived" in rg.judge_system()
+
+OLD_REPO = dict(name="foo", full_name="a/foo", stars=50_000, created_at="2012-01-01", pushed_at="2026-10-01", forks=9, open_issues=3,
+                license="MIT", archived=False, language="C", description="d")
 
 
-gh = lambda **s: card("github", **s)  # noqa: E731
-rss_card = lambda **s: card("rss", **s)  # noqa: E731
-assert matrix("ADOPT", [gh(licensing_risk=9), rss_card(maturity=9)])[0] == "HOLD", "licensing_risk > 7 forces HOLD"
-assert matrix("ADOPT", [gh(licensing_risk=8), rss_card(maturity=9)])[0] == "HOLD"
-assert matrix("ADOPT", [gh(licensing_risk=7), rss_card(maturity=9)])[0] == "ASSESS", "7 is not above 7, but a risk of 7+ caps at ASSESS"
-assert matrix("TRIAL", [gh(licensing_risk=6), rss_card(maturity=9)])[0] == "TRIAL", "6 is fine"
-assert matrix("ADOPT", [rss_card(maturity=9)], fatal=True)[0] == "ASSESS", "fatal flaws cap at ASSESS"
-assert matrix("ADOPT", [card("hackernews", developer_friction=8), rss_card(maturity=9)])[0] == "ASSESS"
-assert matrix("ADOPT", [card("ycombinator", hype_risk=7), rss_card(maturity=9)])[0] == "ASSESS"
-assert matrix("ADOPT", [rss_card(maturity=8)]) == ("ADOPT", []), "enough maturity, no risk: untouched"
-assert matrix("ADOPT", [rss_card(maturity=6)])[0] == "TRIAL" and matrix("ADOPT", [gh()])[0] == "TRIAL", "Adopt needs maturity >= 7"
-assert matrix("HOLD", [rss_card(maturity=9)])[0] == "HOLD" and matrix("ASSESS", [gh()])[0] == "ASSESS", "never moves a ring UP"
-code, notes = matrix("ADOPT", [gh(licensing_risk=9)])
-assert code == "HOLD" and notes == ["Adopt → Hold: licensing_risk is 9 (above 7)"], notes
+def established(*sources, name="Foo", **repo_meta):
+    """A candidate with a big old own repository (standing: widespread) plus one evidence item per source."""
+    c = cand(*sources, name=name)
+    repo_item = dict(ev("GitHub", 90, **dict(OLD_REPO, **repo_meta)), url="https://github.com/a/foo", date="2012-01-01")
+    c["evidence"] = [repo_item] + c["evidence"]
+    c["own_repos"] = [repo_item["url"]]
+    return c
+
+
+weak = lambda lane, **s: card(lane, "low", **s)  # noqa: E731
 failed = {"lane": "rss", "status": "error", "scores": {"enterprise_traction": None, "maturity": None}, "confidence": "low",
           "summary": "", "metrics": {}}
-assert matrix("ADOPT", [failed])[0] == "TRIAL", "a failed agent counts as no maturity score"
 
-# confidence gating: weak model judgements must not decide the ring, computed scores always count
-weak = lambda lane, **s: card(lane, "low", **s)  # noqa: E731
-assert matrix("ADOPT", [weak("ycombinator", hype_risk=9), rss_card(maturity=9)]) == ("ADOPT", []), "low-confidence risk is ignored"
-assert matrix("ADOPT", [weak("hackernews", developer_friction=9), rss_card(maturity=9)])[0] == "ADOPT"
-assert matrix("ADOPT", [card("ycombinator", "medium", hype_risk=9), rss_card(maturity=9)])[0] == "ASSESS", "medium confidence counts"
-code, notes = matrix("ADOPT", [weak("rss", maturity=9)])
-assert code == "TRIAL" and "no reliable RSS data" in notes[0], "a low-confidence maturity cannot justify ADOPT"
-assert matrix("ADOPT", [weak("github", licensing_risk=9), rss_card(maturity=9)])[0] == "HOLD", "computed licensing_risk always counts"
-assert matrix("ADOPT", [weak("github", licensing_risk=7), rss_card(maturity=9)])[0] == "ASSESS"
-assert "low confidence" in " ".join(rg.matrix_rules()) and "not low confidence" in " ".join(rg.matrix_rules())
-print("OK decision matrix")
-
-# ------------------------------------------------------------------ fatal flaws are found by code
-flaws = rg.find_fatal_flaws
-assert flaws([gh(), rss_card(maturity=8)]) == [], "healthy: no flaws"
-assert flaws([gh(licensing_risk=9)]) == ["licensing_risk is 9 (higher is worse)"]
-assert flaws([card("ycombinator", hype_risk=7)]) == ["hype_risk is 7 (higher is worse)"]
-assert flaws([card("ycombinator", hype_risk=6), card("hackernews", developer_friction=6)]) == [], "6 is below the line"
-assert flaws([gh(project_health=2)]) == ["project_health is only 2"] and flaws([rss_card(maturity=1)]) == ["maturity is only 1"]
-assert flaws([gh(project_health=3), rss_card(maturity=3)]) == [], "3 is poor but not fatal"
-assert flaws([weak("ycombinator", hype_risk=9), weak("rss", maturity=0)]) == [], "a low-confidence model score is not a fatal flaw"
-assert flaws([weak("github", licensing_risk=9)]) == ["licensing_risk is 9 (higher is worse)"], "computed scores always count"
-archived = dict(gh(), metrics={"repos": [{"repo": "a/foo", "own_repo": True, "archived": True},
-                                           {"repo": "b/plugin", "own_repo": False, "archived": True}]})
-assert flaws([archived]) == ["the repository a/foo is archived"], "only an own repository being archived counts"
-assert flaws([failed]) == []
-print("OK fatal flaws found by code")
+# what the judge reads: the facts, ALL the evidence (the same lines as the single prompt), the scorecards, and a memo only when there is one
+young = cand("RSS feeds", "RSS feeds")
+memo = {"fatal_flaws_found": False, "memo": "Memo one. Two. Three."}
+text = rg.judge_input(young, [card("rss")], memo)
+assert text.startswith("Technology: Foo\nWhat it is: A foo.\nSuggested quadrant: Tools\n")
+assert "Facts measured by code (true, do not dispute them):\n- Standing: unknown (nothing shows how old it is)." in text
+assert text.index("Facts measured by code") < text.index("Evidence (every item") < text.index("Scorecards from the source analysts") < text.index("Skeptic's")
+assert all(line in text for line in ai_service.evidence_lines(young)) and ai_service.evidence_lines(young)[0] == "- 2026-09-30 RSS feeds: RSS feeds-0 - text"
+assert "- RSS feeds agent [high confidence]: " in text and "GitHub agent: NO USABLE DATA" in text
+assert "Skeptic's risk memo (fatal flaws found by code: no):\nMemo one. Two. Three." in text
+assert "fatal flaws found by code: YES" in rg.judge_input(young, [card("rss")], dict(memo, fatal_flaws_found=True))
+unreviewed = rg.judge_input(young, [card("rss")], {"fatal_flaws_found": False, "memo": ""})
+assert "Skeptic's risk memo: it did not run, so the risks are unchecked." in unreviewed, "a technology that needs a skeptic and has none: say so"
+big = established("Hacker News")
+single = ai_service.classify_message(big) + "\n\nFacts measured by code (true, do not dispute them):\n" + rr.format_record(rr.build_record(big))
+assert "Its own GitHub repository a/foo: 50k stars, created 2012-01-01" in single and "- 2012-01-01 GitHub: GitHub-90 - text" in single
+assert "Standing: widespread (years old and used at scale)" in single and "Scorecards" not in single, "an established technology: facts + evidence only"
+print("OK the judge reads facts, all the evidence, scorecards and the memo; the single prompt reads facts and evidence")
 
 
 # ------------------------------------------------------------------ graph flow with fake agents
-log = {"eval": [], "memo": 0, "decide": [], "active": 0, "max_active": 0}
+log = {"eval": [], "memo": 0, "decide": [], "direct": [], "active": 0, "max_active": 0}
 
 
 def reset():
-    log.update(eval=[], memo=0, decide=[], active=0, max_active=0)
+    log.update(eval=[], memo=0, decide=[], direct=[], active=0, max_active=0)
 
 
 async def fake_eval(llm, payload):
@@ -253,6 +243,11 @@ async def fake_decide(llm, candidate, scorecards, risk):
     return dict(VERDICT)
 
 
+async def fake_direct(llm, candidate):
+    log["direct"].append(candidate["name"])
+    return dict(VERDICT)
+
+
 def all_lanes(candidate):
     return rg.initial_state(dict(candidate, evidence=[ev(s, i) for i, s in enumerate(LANE_SOURCE.values())]))
 
@@ -262,7 +257,7 @@ async def flow():
     mermaid = graph.get_graph().draw_mermaid()
     assert all(f"{lane} --> anti_hype" in mermaid for lane in LANES) and "anti_hype --> judge" in mermaid
     cfg = {"max_concurrency": rg.LANE_CONCURRENCY}
-    rg.evaluate_lane, rg.write_risk_memo, rg.decide = fake_eval, fake_memo, fake_decide
+    rg.evaluate_lane, rg.write_risk_memo, rg.decide, rg.decide_direct = fake_eval, fake_memo, fake_decide, fake_direct
 
     # five agents really run at the same time (a 5-party barrier would deadlock if they ran one after another)
     gate = asyncio.Barrier(len(LANES))
@@ -275,8 +270,8 @@ async def flow():
     out = await graph.ainvoke(all_lanes(cand()), config={"max_concurrency": len(LANES)})
     assert sorted(c["lane"] for c in out["scorecards"]) == sorted(LANES) and out["errors"] == []
     assert out["fatal_flaws_found"] is True and out["risk_memo"].startswith("Risk one")
-    assert out["verdict"]["category"] == "ASSESS" and out["rule_notes"], "judge node applies the matrix to the model's TRIAL"
-    print("OK 5 source agents in parallel, scorecards merged, anti-hype + judge, matrix applied inside the judge node")
+    assert out["verdict"]["category"] == "TRIAL" and out["rule_notes"] == [], "the judge's category is returned as the model gave it"
+    print("OK 5 source agents in parallel, scorecards merged, anti-hype + judge; the guards run later, in pipeline.apply_rules")
 
     # only sources with data run; the skeptic and the judge run once
     reset(); rg.evaluate_lane = fake_eval
@@ -284,6 +279,22 @@ async def flow():
     assert sorted(log["eval"]) == ["github", "rss"] and log["memo"] == 1 and len(log["decide"]) == 1
     assert log["decide"][0][0] == ["github", "rss"]
     print("OK partial dispatch: 2 sources -> 2 agent calls, skeptic once, judge once")
+
+    # an established technology skips the map phase and the skeptic: one judge call, no scorecards (the model knows it, and the digests of
+    # agents that see one source each cost 21 points on the gold set); code still sees an archived repository
+    reset()
+    state = rg.initial_state(established("Hacker News"))
+    assert rg.route_to_evaluators(state) == ["judge"]
+    out = await graph.ainvoke(state, config=cfg)
+    assert log["eval"] == [] and log["memo"] == 0 and out["scorecards"] == [] and out["risk_memo"] == "" and out["errors"] == []
+    assert log["decide"] == [] and log["direct"] == ["Foo"] and out["verdict"]["category"] == "TRIAL", "the single prompt, not the judge"
+    # old but nobody uses it: not established, so the full pipeline runs, skeptic included
+    reset()
+    state = rg.initial_state(established("Hacker News", stars=300))
+    assert sorted(s_.node for s_ in rg.route_to_evaluators(state)) == ["github", "hackernews"]
+    await graph.ainvoke(state, config=cfg)
+    assert sorted(log["eval"]) == ["github", "hackernews"] and log["memo"] == 1 and log["decide"][0][0] == ["github", "hackernews"] and log["direct"] == []
+    print("OK routing: an established technology goes straight to the judge, the others run the map phase and the skeptic")
 
     # the fifth lane is routed like the others: registry evidence alone starts it, and without evidence it never runs
     reset()
@@ -386,9 +397,9 @@ async def flow():
     print("OK rate_all: concurrency cap, progress callback, failure returned in place, empty list")
 
 
-REAL = (rg.evaluate_lane, rg.write_risk_memo, rg.decide)
+REAL = (rg.evaluate_lane, rg.write_risk_memo, rg.decide, rg.decide_direct)
 asyncio.run(flow())
-rg.evaluate_lane, rg.write_risk_memo, rg.decide = REAL   # flow() swapped in fakes
+rg.evaluate_lane, rg.write_risk_memo, rg.decide, rg.decide_direct = REAL   # flow() swapped in fakes
 
 
 # ------------------------------------------------------------------ the real LLM functions against hostile model output
@@ -397,13 +408,14 @@ class FakeChat:
         self.replies, self.seen = replies, []
 
     def with_structured_output(self, schema, method=None):
-        assert method == "json_schema" and schema["title"] in self.replies
+        title = schema.get("title", "classify")   # the single prompt's schema (ai_service.CLASSIFY_SCHEMA) has no title
+        assert method == "json_schema" and title in self.replies
         chat = self
 
         class Runnable:
             async def ainvoke(self, messages):
-                chat.seen.append((schema["title"], messages))
-                reply = chat.replies[schema["title"]]
+                chat.seen.append((title, messages))
+                reply = chat.replies[title]
                 if isinstance(reply, Exception):
                     raise reply
                 return reply
@@ -446,9 +458,20 @@ async def hostile():
     v = await rg.decide(chat, cand("RSS feeds"), [card("rss")], {"fatal_flaws_found": True, "memo": "Bad. Worse. Worst."})
     assert v["category"] == "ASSESS" and v["confidence"] == "low" and v["relevance"] == "LOW"
     judge_user = chat.seen[0][1][1][1]
-    assert "fatal flaws found: YES" in judge_user and "Bad. Worse. Worst." in judge_user
+    assert "fatal flaws found by code: YES" in judge_user and "Bad. Worse. Worst." in judge_user
+    assert "Facts measured by code" in judge_user and "Evidence (every item" in judge_user
     assert "GitHub agent: NO USABLE DATA" in judge_user and "unknown, not good news" in judge_user
     assert "Package registries agent: NO USABLE DATA" in judge_user, "the fifth source is named too when it has nothing"
+    # an established technology is rated by the single prompt with the facts added; an unknown ring is ASSESS
+    chat = FakeChat({"classify": {"quadrant": "Tools", "ring": "Adopt", "summary": "s", "reason": "Mature.", "business_value": "Observability.", "relevance": "HIGH", "confidence": "high"}})
+    v = await rg.decide_direct(chat, established("GitHub"))
+    assert v["category"] == "ADOPT" and v["justification"] == "Mature." and v["confidence"] == "high" and v["relevance"] == "HIGH"
+    system, user = chat.seen[0][1]
+    assert system[1] == ai_service.classify_system() and user[1].startswith(ai_service.classify_message(established("GitHub")))
+    assert "Facts measured by code (true, do not dispute them):" in user[1] and "Standing: widespread" in user[1]
+    odd = FakeChat({"classify": dict({"quadrant": "Tools", "ring": "Adopt", "summary": "s", "reason": "Mature.", "business_value": "Observability.", "relevance": "HIGH", "confidence": "high"}, ring="Maybe", relevance="?", confidence="?")})
+    v = await rg.decide_direct(odd, established("GitHub"))
+    assert (v["category"], v["relevance"], v["confidence"]) == ("ASSESS", "LOW", "low")
     # the skeptic: the model fills three fields that CODE joins; CODE decides fatal_flaws_found (a model once invented a "friction 9")
     three = lambda a="r1", b="r2", c="r3", **extra: {"biggest_risk": a, "second_risk_or_unknown": b, "what_must_be_true": c, **extra}  # noqa: E731
     chat = FakeChat({"risk_memo": three(" Big risk ", "Unknown.", "Proof!", fatal_flaws_found=True, memo="ignored")})   # a claimed flaw is ignored
@@ -456,9 +479,11 @@ async def hostile():
     assert risk == {"fatal_flaws_found": False, "memo": "Big risk. Unknown. Proof!"}, risk   # trimmed, full stop added when missing
     assert "Fatal flaws found by code: none." in chat.seen[0][1][1][1]
     chat = FakeChat({"risk_memo": three("Licence.", "Unknowns.", "Clarify.")})   # a model that says nothing about it is overruled
-    risk = await rg.write_risk_memo(chat, cand("GitHub"), [card("github", licensing_risk=9), card("rss")])
+    risk = await rg.write_risk_memo(chat, established("GitHub", license="AGPL-3.0"), [card("github", licensing_risk=9), card("rss")])
     assert risk["fatal_flaws_found"] is True and risk["memo"] == "Licence. Unknowns. Clarify."
-    assert "licensing_risk is 9" in chat.seen[0][1][1][1] and "put them first" in chat.seen[0][1][1][1]
+    memo_user = chat.seen[0][1][1][1]
+    assert "licensing_risk is 9 (license AGPL-3.0)" in memo_user and "put them first" in memo_user
+    assert "Facts measured by code:" in memo_user and "Standing: widespread" in memo_user, "the skeptic is told the facts too"
     # a real scan once had qwen3:4b copy the prompt's instructions as the "memo" for EVERY technology: that is an error now
     prompt = ai_service.load_prompt("antihype")
     copied = three("The strongest reason not to use it, naming the score or the fact it comes from.", "Fine.", "Fine.")
@@ -516,7 +541,8 @@ async def hostile():
     print("OK package registries agent: 1-10 scores, confidence and caps from the data, unknown growth without a trend")
 
     # the whole graph with the real nodes and a scripted model: happy path, then a model that times out
-    replies = {"scorecard_rss": {"summary": "InfoQ and CNCF report production use.", "enterprise_traction": 8, "maturity": 9,
+    replies = {"classify": {"quadrant": "Tools", "ring": "Adopt", "summary": "s", "reason": "Mature.", "business_value": "Observability.", "relevance": "HIGH", "confidence": "high"},
+               "scorecard_rss": {"summary": "InfoQ and CNCF report production use.", "enterprise_traction": 8, "maturity": 9,
                                  "confidence": "high"},
                "risk_memo": three("None.", "None.", "None."),
                "verdict": {"justification": "Mature.", "category": "ADOPT", "confidence": "high", "relevance": "HIGH",
@@ -524,6 +550,12 @@ async def hostile():
     graph = rg.build_graph(FakeChat(replies))
     res = await rg.rate_candidate(graph, cand("RSS feeds", "RSS feeds"))
     assert res["answer"]["ring"] == "Adopt" and res["rule_notes"] == [] and res["errors"] == []
+    assert (res["route"], res["standing"]) == ("agents", "unknown"), "nothing shows its age: the map phase and the skeptic run"
+    direct = await rg.rate_candidate(graph, established("Hacker News"))
+    assert (direct["route"], direct["standing"], direct["scorecards"]) == ("direct", "widespread", []) and direct["answer"]["ring"] == "Adopt"
+    assert direct["fatal_flaws_found"] is False and direct["risk_memo"] == "" and direct["errors"] == []
+    archived_direct = await rg.rate_candidate(graph, established("Hacker News", archived=True))
+    assert archived_direct["fatal_flaws_found"] is True, "an archived repository is reported even when no skeptic ran"
     assert res["scorecards"][0]["scores"] == {"enterprise_traction": 8, "maturity": 9}
     res = await rg.rate_candidate(rg.build_graph(FakeChat(dict(replies, scorecard_rss=TimeoutError("ollama timed out")))),
                                   cand("RSS feeds"))
@@ -531,7 +563,8 @@ async def hostile():
     print("OK whole graph with the real nodes: happy path, and a model timeout degrades to Assess")
 
     # five lanes through the real nodes: an RSS article pair and a registry lookup are scored side by side
-    both = dict(cand("RSS feeds", "RSS feeds"), evidence=[ev("RSS feeds", 0), ev("RSS feeds", 1), pkg_ev(**npm_meta)])
+    new_package = dict(npm_meta, first_release="2026-08-01")   # a package that old would make the technology established: no map phase
+    both = dict(cand("RSS feeds", "RSS feeds"), evidence=[ev("RSS feeds", 0), ev("RSS feeds", 1), pkg_ev(**new_package)])
     packages_reply = {"summary": "16.1M downloads a month, up 10% a month.", "production_usage_score": 8, "integration_velocity_score": 7}
     res = await rg.rate_candidate(rg.build_graph(FakeChat(dict(replies, scorecard_packages=packages_reply))), both)
     assert sorted(c["lane"] for c in res["scorecards"]) == ["packages", "rss"] and res["errors"] == [], res["errors"]

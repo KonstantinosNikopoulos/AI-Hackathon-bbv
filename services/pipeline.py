@@ -8,7 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
 from config import BATCH_SIZE, DATA_DIR, PACKAGE_MAP, QUADRANTS, REGISTRY_SOURCE, REGISTRY_WORKERS, RINGS, RSS_FEEDS
-from services import ai_service, github_service, hn_service, radar_graph, registry_service, rss_service, yc_service
+from services import (ai_service, github_service, hn_service, radar_graph, radar_record, registry_service, rss_service,
+                      yc_service)
 
 NOISE = re.compile(r"\b(raises|funding|series [a-d]|acquires|acquisition|layoffs?|hiring|podcast|webinar|"
                    r"episode|newsletter|sponsored|discount)\b", re.IGNORECASE)
@@ -204,16 +205,11 @@ def attach_registry_evidence(candidates, settings, progress=lambda msg, frac: No
 
 
 def apply_rules(candidate, answer):
-    """Checks in code what the prompt asks, so a small model cannot break the rules."""
+    """Checks in code what the prompt asks, so a small model cannot break the rules. Only facts are rules (radar_record.apply_guards:
+    an archived repository, a license nobody can use, a technology too new to be proven, ADOPT without years of use); what a model
+    only guessed from headlines never overrules the judge. The same guards apply to the single prompt and to the agents."""
     ring = answer.get("ring") if answer.get("ring") in RINGS else "Assess"
-    notes = []
-    young = candidate.get("youngest_repo_days")
-    if young is not None and young < 180 and ring in ("Adopt", "Trial"):
-        notes.append(f"{ring} → Assess: repository is only {young} days old")
-        ring = "Assess"
-    if ring == "Adopt" and (candidate["mentions"] < 3 or len(candidate["sources"]) < 2):
-        notes.append("Adopt → Trial: needs 3+ mentions from 2+ sources")
-        ring = "Trial"
+    ring, notes = radar_record.apply_guards(ring, radar_record.build_record(candidate))
     quadrant = answer.get("quadrant") if answer.get("quadrant") in QUADRANTS else candidate["quadrant"]
     return ring, quadrant, notes
 
@@ -274,7 +270,7 @@ def run_scan(settings, llm, progress=lambda msg, frac: None, chat_model=None):
             "business_value": answer.get("business_value", ""), "rule_notes": notes,
             "mentions": c["mentions"], "sources": c["sources"], "evidence": c["evidence"],
             "scorecards": rating["scorecards"], "risk_memo": rating["risk_memo"],
-            "fatal_flaws_found": rating["fatal_flaws_found"],
+            "fatal_flaws_found": rating["fatal_flaws_found"], "standing": rating.get("standing", ""), "route": rating.get("route", ""),
         })
 
     progress("Done", 1.0)

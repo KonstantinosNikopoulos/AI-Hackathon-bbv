@@ -11,6 +11,9 @@ the gold one. Run it again with another model and compare.
     python eval/run_gold.py --evidence-only                                     only collect and show what each lane has
     python eval/run_gold.py --verify                                            re-check that the gold labels are still true
     python eval/run_gold.py --compare                                           side by side: every saved result
+    python eval/run_gold.py --rescore results/gold-qwen3-4b-classic-<time>.json   the same model answers, the current rules
+    python eval/run_gold.py --gold eval/heldout_radar.json                      the held-out set (technologies the rules were not designed on)
+    --rules v2                                                                  label a run, so a later --compare keeps it apart
 """
 import argparse
 import asyncio
@@ -29,10 +32,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import config  # noqa: E402
-from services import ai_service, github_service, pipeline, radar_graph, registry_service, rss_service  # noqa: E402
+from services import ai_service, github_service, pipeline, radar_graph, radar_record, registry_service, rss_service  # noqa: E402
 
 GOLD = os.path.join(ROOT, "eval", "gold_radar.json")
-EVAL_DIR = os.path.join(ROOT, "data", "eval")   # data/ is git-ignored: evidence and results stay on this machine
+EVAL_DIR = os.getenv("RADAR_EVAL_DIR") or os.path.join(ROOT, "data", "eval")   # data/ is git-ignored: evidence and results stay on this machine
 PRESS_SITES = ["https://thenewstack.io", "https://github.blog", "https://devblogs.microsoft.com/dotnet", "https://www.cncf.io"]
 RINGS = config.RINGS
 
@@ -187,7 +190,8 @@ def rate_classic(candidates, llm, on_done=lambda i, c: None):
 
 
 def outcome(item, candidate, rating):
-    base = {"name": item["name"], "expected": item["ring"], "basis": item["basis"], "lanes": lanes_with_data(candidate)}
+    base = {"name": item["name"], "expected": item["ring"], "basis": item["basis"], "lanes": lanes_with_data(candidate),
+            "standing": radar_record.build_record(candidate)["standing"]}
     if isinstance(rating, BaseException):
         return {**base, "predicted": None, "error": f"{type(rating).__name__}: {rating}"}
     answer = rating["answer"]
@@ -206,6 +210,8 @@ def summarize(outcomes):
                         for r in RINGS},
             "by_basis": {b: [sum(1 for o in done if o["basis"] == b and o["predicted"] == o["expected"]), sum(1 for o in outcomes if o["basis"] == b)]
                          for b in sorted({o["basis"] for o in outcomes})},
+            "by_standing": {st: [sum(1 for o in done if o.get("standing", "?") == st and o["predicted"] == o["expected"]),
+                                 sum(1 for o in outcomes if o.get("standing", "?") == st)] for st in sorted({o.get("standing", "?") for o in outcomes})},
             "matrix": {e: {p: sum(1 for o in done if o["expected"] == e and o["predicted"] == p) for p in RINGS} for e in RINGS}}
 
 
@@ -217,6 +223,7 @@ def format_report(meta, outcomes, summary):
              f"{summary['within_one'] / max(n, 1):.0%} | failed calls: {summary['failed']}",
              "right per gold ring: " + ", ".join(f"{r} {a}/{b}" for r, (a, b) in summary["by_ring"].items() if b),
              "right per basis:     " + ", ".join(f"{k} {a}/{b}" for k, (a, b) in summary["by_basis"].items()),
+             "right per standing:  " + ", ".join(f"{k} {a}/{b}" for k, (a, b) in summary.get("by_standing", {}).items() if k != "?"),
              "", "confusion matrix (rows = gold ring, columns = predicted)", "            " + "".join(f"{r:>8}" for r in RINGS)]
     lines += [f"  {e:<9} " + "".join(f"{summary['matrix'][e][p]:>8}" for p in RINGS) for e in RINGS]
     lines += ["", "technology                  gold     predicted  lanes with data"]
@@ -231,7 +238,9 @@ def format_report(meta, outcomes, summary):
 def save_result(meta, outcomes, summary, directory=None):
     directory = directory or os.path.join(EVAL_DIR, "results")
     os.makedirs(directory, exist_ok=True)
-    stem = f"{re.sub(r'[^A-Za-z0-9.]+', '-', meta['model'])}-{meta['mode']}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    rules = f"-{meta['rules']}" if meta.get("rules") else ""
+    stem = (f"{meta.get('gold', 'gold')}-{re.sub(r'[^A-Za-z0-9.]+', '-', meta['model'])}-{meta['mode']}{rules}-"
+            f"{datetime.now().strftime('%Y%m%d-%H%M%S')}")
     json.dump({"meta": meta, "summary": summary, "outcomes": outcomes}, open(os.path.join(directory, stem + ".json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
     with open(os.path.join(directory, stem + ".txt"), "w", encoding="utf-8") as f:
@@ -239,17 +248,19 @@ def save_result(meta, outcomes, summary, directory=None):
     return os.path.join(directory, stem)
 
 
-def compare(directory=None):
-    """The newest saved result of every (model, mode), side by side."""
+def compare(directory=None, gold=None):
+    """The newest saved result of every (model, mode), side by side. `gold`: only the results for that gold set (e.g. "heldout")."""
     newest = {}
     for path in sorted(glob.glob(os.path.join(directory or os.path.join(EVAL_DIR, "results"), "*.json"))):
         r = json.load(open(path, encoding="utf-8"))
-        newest[(r["meta"]["model"], r["meta"]["mode"])] = r
+        if gold and r["meta"].get("gold", "gold") != gold:
+            continue
+        newest[(r["meta"]["model"], r["meta"]["mode"], r["meta"].get("rules", ""))] = r
     if not newest:
         return "no saved results yet: run eval/run_gold.py first"
     keys = sorted(newest)
     names = list(dict.fromkeys(o["name"] for r in newest.values() for o in r["outcomes"]))
-    head = f"{'technology':<24} {'gold':<7}" + "".join(f"{m[:14] + '/' + mode[:3]:<19}" for m, mode in keys)
+    head = f"{'technology':<24} {'gold':<7}" + "".join(f"{m[:10] + '/' + mode[:3] + ('/' + rules[:8] if rules else ''):<19}" for m, mode, rules in keys)
     rows = [head, "-" * len(head)]
     for name in names:
         cells = []
@@ -262,6 +273,23 @@ def compare(directory=None):
     rows.append(f"{'exact ring':<32}" + "".join(f"{newest[k]['summary']['exact']}/{newest[k]['summary']['items']:<17}" for k in keys))
     rows.append(f"{'seconds per technology':<32}" + "".join(f"{newest[k]['meta']['seconds'] / max(newest[k]['summary']['items'], 1):<19.1f}" for k in keys))
     return "\n".join(rows)
+
+
+def rescore(result, items, directory=None):
+    """A saved result with the CURRENT rules (pipeline.apply_rules) applied to the ring the model gave: the model is not asked again,
+    so a change of the rules is measured on exactly the same answers. Only valid for answers that the rules did not touch before
+    (the single prompt; the agents' judge, since the guards moved out of the graph into apply_rules)."""
+    by_name = {i["name"]: i for i in items}
+    outcomes = []
+    for o in result["outcomes"]:
+        item = by_name[o["name"]]
+        candidate = build_candidate(item, collect_evidence(item, directory=directory))
+        if not o.get("predicted"):
+            outcomes.append(o)
+            continue
+        ring, _, notes = pipeline.apply_rules(candidate, {"ring": o["llm_ring"]})
+        outcomes.append({**o, "predicted": ring, "notes": notes, "lanes": lanes_with_data(candidate)})
+    return outcomes
 
 
 # ------------------------------------------------------------------ are the gold labels still true?
@@ -325,7 +353,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default=config.DEFAULT_MODEL)
     ap.add_argument("--host", default=config.DEFAULT_OLLAMA_HOST)
-    ap.add_argument("--mode", choices=["agents", "classic"], default="agents")
+    ap.add_argument("--mode", choices=["agents", "classic", "classicfacts", "questions"], default="agents",
+                    help="agents: the app. classic: the old single prompt. classicfacts, questions: variants.py, see its docstring")
+    ap.add_argument("--gold", default=GOLD, help="another list of technologies, e.g. eval/heldout_radar.json (the held-out set)")
     ap.add_argument("--rings", help="only these gold rings, e.g. Adopt,Hold")
     ap.add_argument("--names", help="only these technologies, comma separated")
     ap.add_argument("--limit", type=int, help="at most this many technologies per gold ring")
@@ -334,13 +364,24 @@ def main(argv=None):
     ap.add_argument("--evidence-only", action="store_true")
     ap.add_argument("--verify", action="store_true")
     ap.add_argument("--compare", action="store_true")
+    ap.add_argument("--rules", default="", help="a label for this run (e.g. v2), kept in the file name and shown by --compare")
+    ap.add_argument("--rescore", metavar="RESULT.json", help="apply the current rules to the answers of a saved result, without the model")
     args = ap.parse_args(argv)
 
+    gold = re.sub(r"_radar\.json$", "", os.path.basename(args.gold))   # "gold", "heldout"
     if args.compare:
-        print(compare())
+        print(compare(gold=gold if args.gold != GOLD else None))
         return 0
-    items = load_gold(rings=args.rings.split(",") if args.rings else None,
+    items = load_gold(args.gold, rings=args.rings.split(",") if args.rings else None,
                       names={n.strip().lower() for n in args.names.split(",")} if args.names else None, limit=args.limit)
+    if args.rescore:
+        result = json.load(open(args.rescore, encoding="utf-8"))
+        outcomes = rescore(result, load_gold(args.gold))
+        summary = summarize(outcomes)
+        meta = {**result["meta"], "rules": args.rules or "rescored", "rescored_from": os.path.basename(args.rescore)}
+        print(format_report(meta, outcomes, summary))
+        print("\nsaved:", save_result(meta, outcomes, summary) + ".json / .txt")
+        return 0
     if args.verify:
         results = verify_labels(items)
         for name, status, detail in results:
@@ -365,11 +406,16 @@ def main(argv=None):
     print(f"rating with {args.model} at {args.host} ({args.mode})...", flush=True)
     if args.mode == "agents":
         ratings = rate_agents(candidates, radar_graph.make_chat_model(args.host, args.model), args.parallel, progress)
-    else:
+    elif args.mode == "classic":
         ratings = rate_classic(candidates, ai_service.LLM(args.host, args.model), progress)
+    else:
+        import variants
+        ratings = variants.rate_all(candidates, radar_graph.make_chat_model(args.host, args.model), args.mode, args.parallel)
+        for c in candidates:
+            progress(0, c)
     outcomes = [outcome(i, c, r) for i, c, r in zip(items, candidates, ratings)]
     summary = summarize(outcomes)
-    meta = {"model": args.model, "host": args.host, "mode": args.mode, "seconds": time.time() - started, "run_at": datetime.now().isoformat(timespec="seconds")}
+    meta = {"model": args.model, "host": args.host, "mode": args.mode, "seconds": time.time() - started, "gold": gold, "rules": args.rules, "run_at": datetime.now().isoformat(timespec="seconds")}
     print("\n" + format_report(meta, outcomes, summary))
     print("\nsaved:", save_result(meta, outcomes, summary) + ".json / .txt")
     return 0

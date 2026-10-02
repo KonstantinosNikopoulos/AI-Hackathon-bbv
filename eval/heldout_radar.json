@@ -1,0 +1,876 @@
+{
+ "meta": {
+  "drawn_with": "eval/build_heldout.py, seed 2026",
+  "how_to_read": "Draws the HELD-OUT test set, eval/heldout_radar.json: technologies that nobody looked at while the decision rules were designed.\n\ngold_radar.json is the set the rules were diagnosed on. To know that a rule change is not just fitted to those 29 technologies, the\nresult is also measured on this second set, which is drawn here by rules and a fixed seed, not by hand:\n  - 32 projects drawn at random from the public CNCF landscape, 8 per maturity level (Graduated -> Adopt, Incubating -> Trial,\n    Sandbox -> Assess, Archived -> Hold), each with a GitHub repository, never one that is already in gold_radar.json.\n    Graduated needs 10,000 stars, Incubating 1,000, Sandbox 100 (so \"Adopt\" means widely used), Archived needs an archived repository.\n  - 12 hand-listed technologies outside cloud native whose ring is a fact (6 Adopt, 6 Hold), each with a check."
+ },
+ "items": [
+  {
+   "name": "Istio",
+   "key": "istio",
+   "ring": "Adopt",
+   "quadrant": "Tools",
+   "what": "Connect, secure, control, and observe services.",
+   "basis": "formal",
+   "fact": "Istio is a CNCF graduated project: the highest maturity level (since 2023-07-12).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Istio",
+    "level": "graduated"
+   },
+   "repo": "istio/istio",
+   "packages": {},
+   "search": [
+    "Istio"
+   ]
+  },
+  {
+   "name": "etcd",
+   "key": "etcd",
+   "ring": "Adopt",
+   "quadrant": "Tools",
+   "what": "Distributed reliable key-value store for the most critical data of a distributed system",
+   "basis": "formal",
+   "fact": "etcd is a CNCF graduated project: the highest maturity level (since 2020-11-24).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "etcd",
+    "level": "graduated"
+   },
+   "repo": "etcd-io/etcd",
+   "packages": {},
+   "search": [
+    "etcd"
+   ]
+  },
+  {
+   "name": "cert-manager",
+   "key": "cert-manager",
+   "ring": "Adopt",
+   "quadrant": "Tools",
+   "what": "Automatically provision and manage TLS certificates in Kubernetes",
+   "basis": "formal",
+   "fact": "cert-manager is a CNCF graduated project: the highest maturity level (since 2024-09-29).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "cert-manager",
+    "level": "graduated"
+   },
+   "repo": "cert-manager/cert-manager",
+   "packages": {},
+   "search": [
+    "cert-manager"
+   ]
+  },
+  {
+   "name": "Dapr",
+   "key": "dapr",
+   "ring": "Adopt",
+   "quadrant": "Tools",
+   "what": "Dapr is a portable runtime for building distributed applications across cloud and edge, combining event-driven architecture with workflow orchestration.",
+   "basis": "formal",
+   "fact": "Dapr is a CNCF graduated project: the highest maturity level (since 2024-10-30).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Dapr",
+    "level": "graduated"
+   },
+   "repo": "dapr/dapr",
+   "packages": {},
+   "search": [
+    "Dapr"
+   ]
+  },
+  {
+   "name": "Rook",
+   "key": "rook",
+   "ring": "Adopt",
+   "quadrant": "Tools",
+   "what": "Storage Orchestration for Kubernetes",
+   "basis": "formal",
+   "fact": "Rook is a CNCF graduated project: the highest maturity level (since 2020-10-07).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Rook",
+    "level": "graduated"
+   },
+   "repo": "rook/rook",
+   "packages": {},
+   "search": [
+    "Rook"
+   ]
+  },
+  {
+   "name": "Fluentd",
+   "key": "fluentd",
+   "ring": "Adopt",
+   "quadrant": "Tools",
+   "what": "Fluentd: Unified Logging Layer (project under CNCF)",
+   "basis": "formal",
+   "fact": "Fluentd is a CNCF graduated project: the highest maturity level (since 2019-04-11).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Fluentd",
+    "level": "graduated"
+   },
+   "repo": "fluent/fluentd",
+   "packages": {},
+   "search": [
+    "Fluentd"
+   ]
+  },
+  {
+   "name": "CoreDNS",
+   "key": "coredns",
+   "ring": "Adopt",
+   "quadrant": "Tools",
+   "what": "CoreDNS is a DNS server that chains plugins",
+   "basis": "formal",
+   "fact": "CoreDNS is a CNCF graduated project: the highest maturity level (since 2019-01-24).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "CoreDNS",
+    "level": "graduated"
+   },
+   "repo": "coredns/coredns",
+   "packages": {},
+   "search": [
+    "CoreDNS"
+   ]
+  },
+  {
+   "name": "Jaeger",
+   "key": "jaeger",
+   "ring": "Adopt",
+   "quadrant": "Tools",
+   "what": "CNCF Jaeger, a Distributed Tracing Platform",
+   "basis": "formal",
+   "fact": "Jaeger is a CNCF graduated project: the highest maturity level (since 2019-10-31).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Jaeger",
+    "level": "graduated"
+   },
+   "repo": "jaegertracing/jaeger",
+   "packages": {},
+   "search": [
+    "Jaeger"
+   ]
+  },
+  {
+   "name": "OpenKruise",
+   "key": "openkruise",
+   "ring": "Trial",
+   "quadrant": "Tools",
+   "what": "Automated management of large-scale applications on Kubernetes (incubating project under CNCF)",
+   "basis": "formal",
+   "fact": "OpenKruise is a CNCF incubating project: proven by several adopters, not yet graduated (since 2023-03-02).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "OpenKruise",
+    "level": "incubating"
+   },
+   "repo": "openkruise/kruise",
+   "packages": {},
+   "search": [
+    "OpenKruise"
+   ]
+  },
+  {
+   "name": "Contour",
+   "key": "contour",
+   "ring": "Trial",
+   "quadrant": "Tools",
+   "what": "Contour is a Kubernetes ingress controller using Envoy proxy.",
+   "basis": "formal",
+   "fact": "Contour is a CNCF incubating project: proven by several adopters, not yet graduated (since 2020-07-07).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Contour",
+    "level": "incubating"
+   },
+   "repo": "projectcontour/contour",
+   "packages": {},
+   "search": [
+    "Contour"
+   ]
+  },
+  {
+   "name": "gRPC",
+   "key": "grpc",
+   "ring": "Trial",
+   "quadrant": "Tools",
+   "what": "C++ based gRPC (C++, Python, Ruby, Objective-C, PHP, C#)",
+   "basis": "formal",
+   "fact": "gRPC is a CNCF incubating project: proven by several adopters, not yet graduated (since 2017-02-16).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "gRPC",
+    "level": "incubating"
+   },
+   "repo": "grpc/grpc",
+   "packages": {},
+   "search": [
+    "gRPC"
+   ]
+  },
+  {
+   "name": "Fluid",
+   "key": "fluid",
+   "ring": "Trial",
+   "quadrant": "Tools",
+   "what": "Fluid, elastic data abstraction and acceleration for BigData/AI applications in cloud. (Project under CNCF) ",
+   "basis": "formal",
+   "fact": "Fluid is a CNCF incubating project: proven by several adopters, not yet graduated (since 2026-01-08).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Fluid",
+    "level": "incubating"
+   },
+   "repo": "fluid-cloudnative/fluid",
+   "packages": {},
+   "search": [
+    "Fluid"
+   ]
+  },
+  {
+   "name": "Cortex",
+   "key": "cortex",
+   "ring": "Trial",
+   "quadrant": "Tools",
+   "what": "A horizontally scalable, highly available, multi-tenant, long term Prometheus.",
+   "basis": "formal",
+   "fact": "Cortex is a CNCF incubating project: proven by several adopters, not yet graduated (since 2020-08-20).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Cortex",
+    "level": "incubating"
+   },
+   "repo": "cortexproject/cortex",
+   "packages": {},
+   "search": [
+    "Cortex"
+   ]
+  },
+  {
+   "name": "Container Network Interface (CNI)",
+   "key": "container network interface (cni)",
+   "ring": "Trial",
+   "quadrant": "Tools",
+   "what": "Container Network Interface - networking for Linux containers",
+   "basis": "formal",
+   "fact": "Container Network Interface (CNI) is a CNCF incubating project: proven by several adopters, not yet graduated (since 2017-05-23).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Container Network Interface (CNI)",
+    "level": "incubating"
+   },
+   "repo": "containernetworking/cni",
+   "packages": {},
+   "search": [
+    "Container Network Interface (CNI)"
+   ]
+  },
+  {
+   "name": "HAMi",
+   "key": "hami",
+   "ring": "Trial",
+   "quadrant": "Tools",
+   "what": "Heterogeneous GPU Sharing on Kubernetes",
+   "basis": "formal",
+   "fact": "HAMi is a CNCF incubating project: proven by several adopters, not yet graduated (since 2026-07-02).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "HAMi",
+    "level": "incubating"
+   },
+   "repo": "Project-HAMi/HAMi",
+   "packages": {},
+   "search": [
+    "HAMi"
+   ]
+  },
+  {
+   "name": "Tekton",
+   "key": "tekton",
+   "ring": "Trial",
+   "quadrant": "Tools",
+   "what": "A cloud-native Pipeline resource.",
+   "basis": "formal",
+   "fact": "Tekton is a CNCF incubating project: proven by several adopters, not yet graduated (since 2026-03-13).",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Tekton",
+    "level": "incubating"
+   },
+   "repo": "tektoncd/pipeline",
+   "packages": {},
+   "search": [
+    "Tekton"
+   ]
+  },
+  {
+   "name": "K8sGPT",
+   "key": "k8sgpt",
+   "ring": "Assess",
+   "quadrant": "Tools",
+   "what": "Giving Kubernetes Superpowers to everyone",
+   "basis": "formal",
+   "fact": "K8sGPT is a CNCF sandbox project: early stage, worth a spike.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "K8sGPT",
+    "level": "sandbox"
+   },
+   "repo": "k8sgpt-ai/k8sgpt",
+   "packages": {},
+   "search": [
+    "K8sGPT"
+   ]
+  },
+  {
+   "name": "OAuth2 Proxy",
+   "key": "oauth2 proxy",
+   "ring": "Assess",
+   "quadrant": "Tools",
+   "what": "A reverse proxy that provides authentication with Google, Azure, OpenID Connect and many more identity providers.",
+   "basis": "formal",
+   "fact": "OAuth2 Proxy is a CNCF sandbox project: early stage, worth a spike.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "OAuth2 Proxy",
+    "level": "sandbox"
+   },
+   "repo": "oauth2-proxy/oauth2-proxy",
+   "packages": {},
+   "search": [
+    "OAuth2 Proxy"
+   ]
+  },
+  {
+   "name": "Ratify",
+   "key": "ratify",
+   "ring": "Assess",
+   "quadrant": "Tools",
+   "what": "Artifact Ratification Framework (CNCF Sandbox)",
+   "basis": "formal",
+   "fact": "Ratify is a CNCF sandbox project: early stage, worth a spike.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Ratify",
+    "level": "sandbox"
+   },
+   "repo": "ratify-project/ratify",
+   "packages": {},
+   "search": [
+    "Ratify"
+   ]
+  },
+  {
+   "name": "WasmEdge Runtime",
+   "key": "wasmedge runtime",
+   "ring": "Assess",
+   "quadrant": "Tools",
+   "what": "WasmEdge is a lightweight, high-performance, and extensible WebAssembly runtime for cloud native, edge, and decentralized applications. It powers serverless apps, embedded functions, microservices, smart contracts, and IoT devices.",
+   "basis": "formal",
+   "fact": "WasmEdge Runtime is a CNCF sandbox project: early stage, worth a spike.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "WasmEdge Runtime",
+    "level": "sandbox"
+   },
+   "repo": "WasmEdge/WasmEdge",
+   "packages": {},
+   "search": [
+    "WasmEdge Runtime"
+   ]
+  },
+  {
+   "name": "bootc",
+   "key": "bootc",
+   "ring": "Assess",
+   "quadrant": "Tools",
+   "what": "Boot and upgrade via container images",
+   "basis": "formal",
+   "fact": "bootc is a CNCF sandbox project: early stage, worth a spike.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "bootc",
+    "level": "sandbox"
+   },
+   "repo": "bootc-dev/bootc",
+   "packages": {},
+   "search": [
+    "bootc"
+   ]
+  },
+  {
+   "name": "OpenChoreo",
+   "key": "openchoreo",
+   "ring": "Assess",
+   "quadrant": "Tools",
+   "what": "OpenChoreo is an internal developer platform for Kubernetes",
+   "basis": "formal",
+   "fact": "OpenChoreo is a CNCF sandbox project: early stage, worth a spike.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "OpenChoreo",
+    "level": "sandbox"
+   },
+   "repo": "openchoreo/openchoreo",
+   "packages": {},
+   "search": [
+    "OpenChoreo"
+   ]
+  },
+  {
+   "name": "OVN-Kubernetes",
+   "key": "ovn-kubernetes",
+   "ring": "Assess",
+   "quadrant": "Tools",
+   "what": "A robust Kubernetes networking platform",
+   "basis": "formal",
+   "fact": "OVN-Kubernetes is a CNCF sandbox project: early stage, worth a spike.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "OVN-Kubernetes",
+    "level": "sandbox"
+   },
+   "repo": "ovn-kubernetes/ovn-kubernetes",
+   "packages": {},
+   "search": [
+    "OVN-Kubernetes"
+   ]
+  },
+  {
+   "name": "KubeFleet",
+   "key": "kubefleet",
+   "ring": "Assess",
+   "quadrant": "Tools",
+   "what": "KubeFleet is an open-source Kubernetes multi-cluster application management solution.",
+   "basis": "formal",
+   "fact": "KubeFleet is a CNCF sandbox project: early stage, worth a spike.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "KubeFleet",
+    "level": "sandbox"
+   },
+   "repo": "kubefleet-dev/kubefleet",
+   "packages": {},
+   "search": [
+    "KubeFleet"
+   ]
+  },
+  {
+   "name": "Service Mesh Interface (SMI)",
+   "key": "service mesh interface (smi)",
+   "ring": "Hold",
+   "quadrant": "Tools",
+   "what": "Service Mesh Interface",
+   "basis": "formal",
+   "fact": "Service Mesh Interface (SMI) is a CNCF archived project: no longer maintained.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Service Mesh Interface (SMI)",
+    "level": "archived"
+   },
+   "repo": "servicemeshinterface/smi-spec",
+   "packages": {},
+   "search": [
+    "Service Mesh Interface (SMI)"
+   ]
+  },
+  {
+   "name": "CNI-Genie",
+   "key": "cni-genie",
+   "ring": "Hold",
+   "quadrant": "Tools",
+   "what": "CNI-Genie for choosing pod network of your choice during deployment time. Supported pod networks - Calico, Flannel, Romana, Weave ",
+   "basis": "formal",
+   "fact": "CNI-Genie is a CNCF archived project: no longer maintained.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "CNI-Genie",
+    "level": "archived"
+   },
+   "repo": "cni-genie/CNI-Genie",
+   "packages": {},
+   "search": [
+    "CNI-Genie"
+   ]
+  },
+  {
+   "name": "Open Service Mesh",
+   "key": "open service mesh",
+   "ring": "Hold",
+   "quadrant": "Tools",
+   "what": "Open Service Mesh (OSM) is a lightweight, extensible, cloud native service mesh that allows users to uniformly manage, secure, and get out-of-the-box observability features for highly dynamic microservice environments.",
+   "basis": "formal",
+   "fact": "Open Service Mesh is a CNCF archived project: no longer maintained.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Open Service Mesh",
+    "level": "archived"
+   },
+   "repo": "openservicemesh/osm",
+   "packages": {},
+   "search": [
+    "Open Service Mesh"
+   ]
+  },
+  {
+   "name": "Krator",
+   "key": "krator",
+   "ring": "Hold",
+   "quadrant": "Tools",
+   "what": "Kubernetes Rust State Machine Operator",
+   "basis": "formal",
+   "fact": "Krator is a CNCF archived project: no longer maintained.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Krator",
+    "level": "archived"
+   },
+   "repo": "krator-rs/krator",
+   "packages": {},
+   "search": [
+    "Krator"
+   ]
+  },
+  {
+   "name": "rkt",
+   "key": "rkt",
+   "ring": "Hold",
+   "quadrant": "Tools",
+   "what": "[Project ended] rkt is a pod-native container engine for Linux. It is composable, secure, and built on standards.",
+   "basis": "formal",
+   "fact": "rkt is a CNCF archived project: no longer maintained.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "rkt",
+    "level": "archived"
+   },
+   "repo": "rkt/rkt",
+   "packages": {},
+   "search": [
+    "rkt"
+   ]
+  },
+  {
+   "name": "Fonio",
+   "key": "fonio",
+   "ring": "Hold",
+   "quadrant": "Tools",
+   "what": "Data first monitoring agent using (e)BPF, built on RedBPF",
+   "basis": "formal",
+   "fact": "Fonio is a CNCF archived project: no longer maintained.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "Fonio",
+    "level": "archived"
+   },
+   "repo": "foniod/foniod",
+   "packages": {},
+   "search": [
+    "Fonio"
+   ]
+  },
+  {
+   "name": "OpenTracing",
+   "key": "opentracing",
+   "ring": "Hold",
+   "quadrant": "Tools",
+   "what": "OpenTracing API for Go. 🛑 This library is DEPRECATED! https://github.com/opentracing/specification/issues/163",
+   "basis": "formal",
+   "fact": "OpenTracing is a CNCF archived project: no longer maintained.",
+   "source": "https://landscape.cncf.io/",
+   "check": {
+    "type": "cncf",
+    "name": "OpenTracing",
+    "level": "archived"
+   },
+   "repo": "opentracing/opentracing-go",
+   "packages": {},
+   "search": [
+    "OpenTracing"
+   ]
+  },
+  {
+   "name": "Java",
+   "key": "java",
+   "ring": "Adopt",
+   "quadrant": "Languages & Frameworks",
+   "what": "The Java platform (OpenJDK).",
+   "basis": "ubiquity",
+   "fact": "The OpenJDK repository is pushed to daily.",
+   "source": "https://github.com/openjdk/jdk",
+   "check": {
+    "type": "github_active",
+    "repo": "openjdk/jdk",
+    "min_stars": 10000,
+    "max_days_since_push": 30
+   },
+   "repo": "openjdk/jdk",
+   "packages": {},
+   "search": [
+    "Java"
+   ]
+  },
+  {
+   "name": "Node.js",
+   "key": "node.js",
+   "ring": "Adopt",
+   "quadrant": "Platforms",
+   "what": "The JavaScript runtime.",
+   "basis": "ubiquity",
+   "fact": "The official Node.js Docker image has over 7 billion pulls.",
+   "source": "https://hub.docker.com/_/node",
+   "check": {
+    "type": "docker_pulls",
+    "image": "library/node",
+    "min": 1000000000
+   },
+   "repo": "nodejs/node",
+   "packages": {
+    "docker": [
+     "library/node"
+    ]
+   },
+   "search": [
+    "Node.js"
+   ]
+  },
+  {
+   "name": "Docker",
+   "key": "docker",
+   "ring": "Adopt",
+   "quadrant": "Tools",
+   "what": "The container engine.",
+   "basis": "ubiquity",
+   "fact": "The Moby repository behind Docker has tens of thousands of stars and is pushed to daily.",
+   "source": "https://github.com/moby/moby",
+   "check": {
+    "type": "github_active",
+    "repo": "moby/moby",
+    "min_stars": 50000,
+    "max_days_since_push": 30
+   },
+   "repo": "moby/moby",
+   "packages": {},
+   "search": [
+    "Docker"
+   ]
+  },
+  {
+   "name": "nginx",
+   "key": "nginx",
+   "ring": "Adopt",
+   "quadrant": "Platforms",
+   "what": "The web server and reverse proxy.",
+   "basis": "ubiquity",
+   "fact": "The official nginx Docker image has over a billion pulls.",
+   "source": "https://hub.docker.com/_/nginx",
+   "check": {
+    "type": "docker_pulls",
+    "image": "library/nginx",
+    "min": 1000000000
+   },
+   "repo": "nginx/nginx",
+   "packages": {
+    "docker": [
+     "library/nginx"
+    ]
+   },
+   "search": [
+    "nginx"
+   ]
+  },
+  {
+   "name": "Go",
+   "key": "go",
+   "ring": "Adopt",
+   "quadrant": "Languages & Frameworks",
+   "what": "The Go programming language.",
+   "basis": "ubiquity",
+   "fact": "The official golang Docker image has over 2 billion pulls and the repository is pushed to daily.",
+   "source": "https://hub.docker.com/_/golang",
+   "check": {
+    "type": "docker_pulls",
+    "image": "library/golang",
+    "min": 1000000000
+   },
+   "repo": "golang/go",
+   "packages": {
+    "docker": [
+     "library/golang"
+    ]
+   },
+   "search": [
+    "Go"
+   ]
+  },
+  {
+   "name": "Spring Boot",
+   "key": "spring boot",
+   "ring": "Adopt",
+   "quadrant": "Languages & Frameworks",
+   "what": "The Java application framework.",
+   "basis": "ubiquity",
+   "fact": "The spring-boot repository has over 70,000 stars and is pushed to daily.",
+   "source": "https://github.com/spring-projects/spring-boot",
+   "check": {
+    "type": "github_active",
+    "repo": "spring-projects/spring-boot",
+    "min_stars": 50000,
+    "max_days_since_push": 30
+   },
+   "repo": "spring-projects/spring-boot",
+   "packages": {},
+   "search": [
+    "Spring Boot"
+   ]
+  },
+  {
+   "name": "Dockershim",
+   "key": "dockershim",
+   "ring": "Hold",
+   "quadrant": "Platforms",
+   "what": "The Kubernetes component that let it use Docker as a container runtime.",
+   "basis": "lifecycle",
+   "fact": "Kubernetes removed dockershim in version 1.24 (May 2022).",
+   "source": "https://kubernetes.io/blog/2022/02/17/dockershim-faq/",
+   "check": {
+    "type": "manual"
+   },
+   "repo": null,
+   "packages": {},
+   "search": [
+    "Dockershim"
+   ]
+  },
+  {
+   "name": "PodSecurityPolicy",
+   "key": "podsecuritypolicy",
+   "ring": "Hold",
+   "quadrant": "Techniques",
+   "what": "The Kubernetes admission control for pod security.",
+   "basis": "lifecycle",
+   "fact": "Kubernetes removed PodSecurityPolicy in version 1.25 (August 2022).",
+   "source": "https://kubernetes.io/docs/concepts/security/pod-security-policy/",
+   "check": {
+    "type": "manual"
+   },
+   "repo": null,
+   "packages": {},
+   "search": [
+    "PodSecurityPolicy"
+   ]
+  },
+  {
+   "name": "Helm 2",
+   "key": "helm 2",
+   "ring": "Hold",
+   "quadrant": "Tools",
+   "what": "The second major version of the Helm package manager for Kubernetes, with its Tiller server.",
+   "basis": "lifecycle",
+   "fact": "Helm v2 support ended on 2020-11-13; Helm 3 replaced it.",
+   "source": "https://helm.sh/blog/helm-v2-deprecation-timeline/",
+   "check": {
+    "type": "manual"
+   },
+   "repo": null,
+   "packages": {},
+   "search": [
+    "Helm 2"
+   ]
+  },
+  {
+   "name": "CentOS Linux",
+   "key": "centos linux",
+   "ring": "Hold",
+   "quadrant": "Platforms",
+   "what": "The community rebuild of Red Hat Enterprise Linux (not CentOS Stream).",
+   "basis": "lifecycle",
+   "fact": "CentOS Linux 7, the last release, reached end of life on 2024-06-30.",
+   "source": "https://endoflife.date/centos",
+   "check": {
+    "type": "eol",
+    "product": "centos",
+    "cycle": "7"
+   },
+   "repo": null,
+   "packages": {},
+   "search": [
+    "CentOS Linux"
+   ]
+  },
+  {
+   "name": "PHP 5",
+   "key": "php 5",
+   "ring": "Hold",
+   "quadrant": "Languages & Frameworks",
+   "what": "The PHP 5 language line.",
+   "basis": "lifecycle",
+   "fact": "PHP 5.6, the last release of the line, reached end of life on 2018-12-31.",
+   "source": "https://endoflife.date/php",
+   "check": {
+    "type": "eol",
+    "product": "php",
+    "cycle": "5.6"
+   },
+   "repo": null,
+   "packages": {},
+   "search": [
+    "PHP 5"
+   ]
+  },
+  {
+   "name": "Apache Struts 1",
+   "key": "apache struts 1",
+   "ring": "Hold",
+   "quadrant": "Languages & Frameworks",
+   "what": "The first version of the Apache Struts web framework.",
+   "basis": "lifecycle",
+   "fact": "Struts 1 reached end of life in 2013 and its GitHub repository is archived.",
+   "source": "https://struts.apache.org/struts1eol-announcement.html",
+   "check": {
+    "type": "github_archived",
+    "repo": "apache/struts1"
+   },
+   "repo": "apache/struts1",
+   "packages": {},
+   "search": [
+    "Apache Struts 1"
+   ]
+  }
+ ]
+}

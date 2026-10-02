@@ -6,16 +6,24 @@ state once and writes its own part. Nothing loops.
     START --Send--> github ------+
             Send--> ycombinator -+
             Send--> hackernews --+--> anti_hype --> judge --> END
-            Send--> rss ---------+
-            Send--> packages ----+
+            Send--> rss ---------+                    ^
+            Send--> packages ----+                    |
+    START --(established technology)------------------+
 
- 1. Constants and OverallState (below, and radar_lanes.py for the per-source facts)
- 2. Map:       one agent per source that has data, all in parallel. They return a scorecard (two scores each).
-               The fifth source, the package registries (npm, PyPI, Maven Central, Docker Hub), is looked up per
-               technology by pipeline.attach_registry_evidence before the graph runs, and arrives as evidence.
- 3. Anti-hype: reads the scorecards, hunts for reasons to reject, writes a 3-sentence risk memo.
- 4. Judge:     reads scorecards + memo, applies the decision matrix, returns category + justification.
- 5. Streamlit: rate_all / rate_candidate (async), called once per scan from pipeline.run_scan.
+ 1. Constants and OverallState (below, radar_lanes.py for the per-source facts, radar_record.py for the facts about the whole technology)
+ 2. Map:       one agent per source that has data, all in parallel. They return a scorecard (two scores each): a digest of
+               their source for the judge. The fifth source, the package registries (npm, PyPI, Maven Central, Docker Hub), is
+               looked up per technology by pipeline.attach_registry_evidence before the graph runs, and arrives as evidence.
+               An ESTABLISHED technology (years old, with real traction: radar_record.standing) skips the map phase and the
+               skeptic and is rated by the single prompt (prompts/classify.md) with the facts measured by code added: the model
+               knows it, and on the 29 technologies of eval/gold_radar.json the digests of agents that each see one source cost
+               21 points of accuracy (62% with them, 83% without), because a famous retired technology still has popular
+               headlines. The map phase is for what the model cannot know: the new, the young and the unproven.
+ 3. Anti-hype: reads the scorecards, writes a 3-sentence risk memo.
+ 4. Judge:     reads the facts measured by code, ALL the evidence, the scorecards and the memo, and decides the ring. The one
+               who sees the whole picture decides: a source agent only sees its own slice.
+ 5. Guards:    pipeline.apply_rules enforces the few rules that are facts (radar_record.apply_guards) after the judge.
+ 6. Streamlit: rate_all / rate_candidate (async), called once per scan from pipeline.run_scan.
 
 The prompts are files in prompts/ (rate_<source>.md, antihype.md, judge.md), editable in the app's Prompts tab.
 """
@@ -29,10 +37,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from config import BBV_CONTEXT, GRAPH_LANE_CONCURRENCY, GRAPH_TECH_CONCURRENCY, OLLAMA_NUM_THREAD, RINGS
-from services.ai_service import load_prompt, thinking_setting
+from services.ai_service import CLASSIFY_SCHEMA, classify_message, classify_system, evidence_lines, load_prompt, thinking_setting
 from services.radar_lanes import (CODE_CONFIDENCE_LANES, COMPUTED_NAMES, COMPUTED_SCORES, LANE_SOURCE, LANES, RISK_SCORES,
                                   SCORE_FLOOR, SCORE_MIN, SCORES_BY_LANE, Lane, cap_confidence, clean_scores, lane_facts,
                                   lane_schema)
+from services.radar_record import build_record, fatal_flaws, format_record, is_established, matrix_rules  # noqa: F401  (matrix_rules: re-exported)
 
 # ------------------------------------------------------------------ 1. constants
 # The four rings as the spec writes them. config.RINGS stays the single source of truth for the app ("Adopt", ...);
@@ -41,13 +50,6 @@ Category = Literal["ADOPT", "TRIAL", "ASSESS", "HOLD"]
 RING_BY_CODE = {c: r for c in get_args(Category) for r in RINGS if r.upper() == c}
 assert set(RING_BY_CODE) == set(get_args(Category)), "Category and config.RINGS have drifted apart"
 RING_ORDER = [r.upper() for r in RINGS]   # best first: ADOPT, TRIAL, ASSESS, HOLD
-
-# The judge's decision matrix. The same numbers go into the judge prompt ({matrix} in prompts/judge.md)
-# and are enforced in code afterwards, because a small model cannot be trusted to obey a rule in a prompt.
-HOLD_IF_LICENSING_RISK_ABOVE = 7
-ASSESS_CAP_IF_ANY_RISK_AT_LEAST = 7
-ADOPT_MIN_MATURITY = 7
-FATAL_IF_HEALTH_OR_MATURITY_AT_MOST = 2   # project_health / maturity this low is a fatal flaw (see find_fatal_flaws)
 
 # Parallelism caps for the local Ollama. In flight at once <= TECH_CONCURRENCY * LANE_CONCURRENCY. See config.py.
 LANE_CONCURRENCY = GRAPH_LANE_CONCURRENCY
@@ -126,7 +128,7 @@ class OverallState(TypedDict):
     risk_memo: str
     # phase 3 (reduce)
     verdict: Verdict | None
-    rule_notes: Annotated[list[str], operator.add]   # decision-matrix rules that changed the judge's answer
+    rule_notes: Annotated[list[str], operator.add]   # always empty: the guards run in pipeline.apply_rules, after the graph
     # non-fatal problems (a failed agent); pipeline appends these to result["errors"]
     errors: Annotated[list[str], operator.add]
 
@@ -141,58 +143,6 @@ def initial_state(candidate: Candidate) -> OverallState:
             raw.setdefault(lane, {"evidence": []})["evidence"].append(e)
     return {"candidate": candidate, "raw": raw, "scorecards": [], "fatal_flaws_found": False, "risk_memo": "",
             "verdict": None, "rule_notes": [], "errors": []}
-
-
-# ------------------------------------------------------------------ decision matrix (code, not prompt)
-def matrix_rules() -> list[str]:
-    """The rules in words. Used by the judge prompt; enforce_matrix applies the same numbers."""
-    return [
-        f"If licensing_risk is above {HOLD_IF_LICENSING_RISK_ABOVE}, the category must be HOLD.",
-        "If the anti-hype review found fatal flaws, the category can be at most ASSESS (never ADOPT or TRIAL). "
-        f"Fatal flaws are found by code: a risk score of {ASSESS_CAP_IF_ANY_RISK_AT_LEAST}+, project_health or maturity of "
-        f"{FATAL_IF_HEALTH_OR_MATURITY_AT_MOST} or less, or an archived repository.",
-        f"If any risk score ({', '.join(sorted(RISK_SCORES))}) is {ASSESS_CAP_IF_ANY_RISK_AT_LEAST} or higher, "
-        "the category can be at most ASSESS. Ignore a risk score from a scorecard marked low confidence, because it is "
-        "weak evidence (licensing_risk is computed by code and always counts).",
-        f"ADOPT needs a maturity score of at least {ADOPT_MIN_MATURITY} from a scorecard that is not low confidence. Without it "
-        "(no RSS data, or only one article) the category can be at most TRIAL.",
-    ]
-
-
-def flat_scores(scorecards: list[Scorecard], trusted_only: bool = False) -> dict[str, int]:
-    """name -> score over the scored scorecards. trusted_only drops the numbers a model judged with low confidence
-    (scores computed by code, like licensing_risk, are always trusted)."""
-    return {name: value for c in scorecards if c["status"] == "scored"
-            for name, value in c["scores"].items()
-            if value is not None and (not trusted_only or c["confidence"] != "low" or name in COMPUTED_NAMES)}
-
-
-def enforce_matrix(verdict: Verdict, scorecards: list[Scorecard], fatal_flaws_found: bool) -> tuple[Verdict, list[str]]:
-    """Applies matrix_rules() in code. Returns the (possibly changed) verdict and a note per change."""
-    notes, category = [], verdict["category"]
-    scores, trusted = flat_scores(scorecards), flat_scores(scorecards, trusted_only=True)
-
-    def move(new, why):
-        nonlocal category
-        if new != category:
-            notes.append(f"{RING_BY_CODE[category]} → {RING_BY_CODE[new]}: {why}")
-            category = new
-
-    licensing = scores.get("licensing_risk")
-    if licensing is not None and licensing > HOLD_IF_LICENSING_RISK_ABOVE:
-        move("HOLD", f"licensing_risk is {licensing} (above {HOLD_IF_LICENSING_RISK_ABOVE})")
-    else:
-        reasons = ["the anti-hype review found fatal flaws"] if fatal_flaws_found else []
-        risky = [f"{n} {v}" for n, v in sorted(trusted.items()) if n in RISK_SCORES and v >= ASSESS_CAP_IF_ANY_RISK_AT_LEAST]
-        if risky:
-            reasons.append("risk too high: " + ", ".join(risky))
-        if reasons and RING_ORDER.index(category) < RING_ORDER.index("ASSESS"):
-            move("ASSESS", "; ".join(reasons))
-        maturity = trusted.get("maturity")
-        if category == "ADOPT" and (maturity is None or maturity < ADOPT_MIN_MATURITY):
-            move("TRIAL", f"ADOPT needs maturity of at least {ADOPT_MIN_MATURITY}, "
-                          + ("there is no reliable RSS data" if maturity is None else f"maturity is {maturity}"))
-    return Verdict(**{**verdict, "category": category}), notes
 
 
 # ------------------------------------------------------------------ the three LLM steps
@@ -239,22 +189,6 @@ async def evaluate_lane(llm, payload: LaneInput) -> Scorecard:
                      summary=str(answer.get("summary", "")).strip()[:400], metrics=facts.metrics)
 
 
-def find_fatal_flaws(scorecards: list[Scorecard]) -> list[str]:
-    """The measurable reasons to reject, found by code. A 4B model hallucinated a "developer_friction 9" for a healthy
-    repository when it was asked to decide this itself, so the boolean is never the model's call. Low-confidence
-    scores of a model do not count (computed ones like licensing_risk always do)."""
-    flaws = []
-    for name, value in sorted(flat_scores(scorecards, trusted_only=True).items()):
-        if name in RISK_SCORES and value >= ASSESS_CAP_IF_ANY_RISK_AT_LEAST:
-            flaws.append(f"{name} is {value} (higher is worse)")
-        elif name in ("project_health", "maturity") and value <= FATAL_IF_HEALTH_OR_MATURITY_AT_MOST:
-            flaws.append(f"{name} is only {value}")
-    for c in scorecards:
-        flaws += [f"the repository {r['repo']} is archived" for r in c["metrics"].get("repos", [])
-                  if r.get("own_repo") and r.get("archived")]
-    return flaws
-
-
 # The memo is three named fields that code joins into 3 sentences. With a single free-text "memo" field, qwen3:4b copied the
 # three numbered instructions of the prompt word for word for EVERY technology of a real scan, so nothing was ever reviewed.
 MEMO_FIELDS = ("biggest_risk", "second_risk_or_unknown", "what_must_be_true")
@@ -285,12 +219,15 @@ def invented_scores(memo: str, scorecards: list[Scorecard]) -> list[str]:
 
 
 async def write_risk_memo(llm, candidate: Candidate, scorecards: list[Scorecard]) -> RiskMemo:
-    """The model fills the three memo fields; `fatal_flaws_found` comes from find_fatal_flaws, and the model is told its result.
+    """The model fills the three memo fields; `fatal_flaws_found` comes from the record (radar_record.fatal_flaws: an archived
+    repository, a license nobody can use), and the model is told its result.
     A memo that copies the prompt or leaves a field empty raises, so the judge is told "not reviewed" instead of reading junk."""
-    flaws = find_fatal_flaws(scorecards)
+    record = build_record(candidate)
+    flaws = fatal_flaws(record)
     checks = ("Fatal flaws found by code (facts, do not dispute them, and put them first in biggest_risk):\n"
               + "\n".join(f"- {f}" for f in flaws)) if flaws else "Fatal flaws found by code: none."
     user = (f"Technology: {candidate['name']}\nWhat it is: {candidate.get('what', '')}\n\n"
+            f"Facts measured by code:\n{format_record(record)}\n\n"
             f"Scorecards from the source agents:\n{format_scorecards(scorecards)}\n\n{checks}")
     system = load_prompt("antihype")
     answer = await _ask(llm, MEMO_SCHEMA, system, user)
@@ -324,16 +261,38 @@ def judge_system() -> str:
             .replace("{matrix}", "\n".join(f"- {rule}" for rule in matrix_rules())))
 
 
+def judge_input(candidate: Candidate, scorecards: list[Scorecard], risk: RiskMemo) -> str:
+    """What the judge reads: the facts code measured, ALL the evidence (the same lines the single prompt reads), the scorecards as
+    digests of each source, and the skeptic's memo."""
+    parts = [f"Technology: {candidate['name']}", f"What it is: {candidate.get('what', '')}",
+             f"Suggested quadrant: {candidate.get('quadrant', '')}", "",
+             "Facts measured by code (true, do not dispute them):", format_record(build_record(candidate)), "",
+             "Evidence (every item found about it):", *evidence_lines(candidate), "",
+             "Scorecards from the source analysts:", format_scorecards(scorecards)]
+    if risk["memo"]:
+        parts += ["", f"Skeptic's risk memo (fatal flaws found by code: {'YES' if risk['fatal_flaws_found'] else 'no'}):", risk["memo"]]
+    else:
+        parts += ["", "Skeptic's risk memo: it did not run, so the risks are unchecked."]
+    return "\n".join(parts)
+
+
 async def decide(llm, candidate: Candidate, scorecards: list[Scorecard], risk: RiskMemo) -> Verdict:
-    review = (f"Anti-hype review (fatal flaws found: {'YES' if risk['fatal_flaws_found'] else 'no'}):\n{risk['memo']}"
-              if risk["memo"] else "Anti-hype review: it did not run, so the risks are unchecked.")
-    user = (f"Technology: {candidate['name']}\nWhat it is: {candidate.get('what', '')}\n\n"
-            f"Scorecards from the source agents:\n{format_scorecards(scorecards)}\n\n{review}")
-    answer = await _ask(llm, VERDICT_SCHEMA, judge_system(), user)
+    answer = await _ask(llm, VERDICT_SCHEMA, judge_system(), judge_input(candidate, scorecards, risk))
     return Verdict(
         category=answer.get("category") if answer.get("category") in RING_BY_CODE else "ASSESS",
         justification=str(answer.get("justification", "")).strip(),
         confidence=_confidence(answer),
+        relevance=answer.get("relevance") if answer.get("relevance") in ("HIGH", "MEDIUM", "LOW") else "LOW",
+        business_value=str(answer.get("business_value", "")).strip())
+
+
+async def decide_direct(llm, candidate: Candidate) -> Verdict:
+    """An established technology: the single prompt (prompts/classify.md) with the facts measured by code added to what it reads."""
+    user = classify_message(candidate) + "\n\nFacts measured by code (true, do not dispute them):\n" + format_record(build_record(candidate))
+    answer = await _ask(llm, CLASSIFY_SCHEMA, classify_system(), user)
+    ring = answer.get("ring") if answer.get("ring") in RING_BY_CODE.values() else "Assess"
+    return Verdict(
+        category=ring.upper(), justification=str(answer.get("reason", "")).strip(), confidence=_confidence(answer),
         relevance=answer.get("relevance") if answer.get("relevance") in ("HIGH", "MEDIUM", "LOW") else "LOW",
         business_value=str(answer.get("business_value", "")).strip())
 
@@ -343,7 +302,10 @@ def route_to_evaluators(state: OverallState):
     """Conditional edge from START: one Send per source that has data. A source without data is never run,
     so no LLM call is spent on it. Returns "judge" when no source has any data, because an empty list of
     Sends would end the graph without a verdict. The five lanes are radar_lanes.LANES: "packages" only has data
-    when the registry lookup tied a package to the technology (many have none), and is skipped like any empty source."""
+    when the registry lookup tied a package to the technology (many have none), and is skipped like any empty source.
+    An established technology goes straight to the judge (see the module docstring)."""
+    if is_established(build_record(state["candidate"])):
+        return ["judge"]
     sends = [Send(lane, LaneInput(lane=lane, candidate=state["candidate"], lane_raw=raw))
              for lane in LANES if (raw := state["raw"].get(lane))]
     return sends or ["judge"]
@@ -397,6 +359,8 @@ async def anti_hype_node(state: OverallState, *, llm) -> dict:
 
 # ------------------------------------------------------------------ 4. judge
 async def judge_node(state: OverallState, *, llm) -> dict:
+    if is_established(build_record(state["candidate"])):
+        return {"verdict": await decide_direct(llm, state["candidate"])}   # no map phase ran: nothing to digest
     scored = [c for c in state["scorecards"] if c["status"] == "scored"]
     if not scored:
         # Mirrors the existing prompt rule "if the evidence is thin, choose Assess with low confidence".
@@ -404,10 +368,9 @@ async def judge_node(state: OverallState, *, llm) -> dict:
             category="ASSESS", confidence="low", relevance="LOW", business_value="",
             justification="No source agent produced a usable score, so there is not enough evidence to place it higher.")}
     risk = RiskMemo(fatal_flaws_found=state["fatal_flaws_found"], memo=state["risk_memo"])
-    # An exception here is not caught: pipeline.run_scan already records it and skips the technology.
-    verdict = await decide(llm, state["candidate"], scored, risk)
-    verdict, notes = enforce_matrix(verdict, scored, state["fatal_flaws_found"])
-    return {"verdict": verdict, "rule_notes": notes}
+    # An exception here is not caught: pipeline.run_scan already records it and skips the technology. The judge's category is
+    # returned as it is: the guards (radar_record.apply_guards) run in pipeline.apply_rules, so the report shows what the model said.
+    return {"verdict": await decide(llm, state["candidate"], scored, risk)}
 
 
 # ------------------------------------------------------------------ wiring
@@ -455,9 +418,11 @@ def to_classification(candidate: Candidate, verdict: Verdict) -> dict:
 async def rate_candidate(graph, candidate: Candidate) -> dict:
     """Async drop-in for ai_service.classify_technology. "answer" has the old classify keys."""
     final = await graph.ainvoke(initial_state(candidate), config={"max_concurrency": LANE_CONCURRENCY})
+    record = build_record(candidate)
     return {"answer": to_classification(candidate, final["verdict"]), "scorecards": final["scorecards"],
-            "fatal_flaws_found": final["fatal_flaws_found"], "risk_memo": final["risk_memo"],
-            "rule_notes": final["rule_notes"], "errors": final["errors"]}
+            "fatal_flaws_found": final["fatal_flaws_found"] or bool(fatal_flaws(record)), "risk_memo": final["risk_memo"],
+            "rule_notes": final["rule_notes"], "errors": final["errors"], "standing": record["standing"],
+            "route": "direct" if is_established(record) else "agents"}
 
 
 async def rate_all(graph, candidates: list[Candidate], on_done=lambda i, candidate: None) -> list:

@@ -166,7 +166,13 @@ def extract_technologies(llm, signals, source=None):
     return result.get("technologies", [])
 
 
-def classify_technology(llm, candidate):
+def evidence_lines(candidate):
+    """Every evidence item of a candidate as one dated line. The single prompt and the judge of the agents read the same lines."""
+    return [f"- {e.get('date') or 'n/a'} {e['source']}: {e['title']} - {e['text']}" for e in candidate["evidence"]]
+
+
+def classify_message(candidate):
+    """What the single prompt is shown about one technology."""
     lines = [
         f"Technology: {candidate['name']}",
         f"What it is: {candidate.get('what', '')}",
@@ -177,8 +183,12 @@ def classify_technology(llm, candidate):
     if candidate.get("youngest_repo_days") is not None:
         lines.append(f"Its GitHub repository was created {candidate['youngest_repo_days']} days ago.")
     lines.append("Evidence:")
-    lines += [f"- {e.get('date') or 'n/a'} {e['source']}: {e['title']} - {e['text']}" for e in candidate["evidence"]]
-    return llm.chat_json(classify_system(), "\n".join(lines), CLASSIFY_SCHEMA)
+    lines += evidence_lines(candidate)
+    return "\n".join(lines)
+
+
+def classify_technology(llm, candidate):
+    return llm.chat_json(classify_system(), classify_message(candidate), CLASSIFY_SCHEMA)
 
 
 def analyze_technology(tech, host="http://localhost:11434", model="llama3.2:3b"):
