@@ -22,9 +22,6 @@ from services import ai_service  # noqa: E402
 spec = importlib.util.spec_from_file_location("run_gold", os.path.join(ROOT, "eval", "run_gold.py"))   # "eval" is not a package name
 rg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rg)
-spec = importlib.util.spec_from_file_location("variants", os.path.join(ROOT, "eval", "variants.py"))
-variants = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(variants)
 
 # ------------------------------------------------------------------ the gold file
 items = rg.load_gold()
@@ -115,65 +112,57 @@ assert c2["mentions"] == 5 and c2["sources"] == candidate["sources"] and "packag
 print("OK evidence: GitHub, Hacker News and press by name, incomplete snapshots are not saved, saved ones are reused, registry data is no mention")
 
 # ------------------------------------------------------------------ rating, report, comparison
-class Structured:
-    def __init__(self, schema, adopt):
-        self.schema, self.adopt = schema, adopt
+class FakeModel:
+    """The Ollama wrapper: answers the single prompt, ADOPT for the technologies in `adopt`, HOLD for the others."""
 
-    async def ainvoke(self, messages):
-        (_, system), (_, user) = messages
-        title, tech = self.schema.get("title", "classify"), user.splitlines()[0].replace("Technology: ", "")
-        if title.startswith("scorecard_"):
-            return {"summary": "fine", "confidence": "high", **{n: 8 for n in self.schema["properties"] if n not in ("summary", "confidence")}}
-        if title == "risk_memo":
-            return {"biggest_risk": "Risk one.", "second_risk_or_unknown": "Risk two.", "what_must_be_true": "Risk three."}
-        if title == "classify":   # an established technology is rated by the single prompt
-            return {"quadrant": "Tools", "ring": "Adopt" if tech in self.adopt else "Hold", "summary": "s", "reason": "j", "confidence": "high",
-                    "relevance": "HIGH", "business_value": "b"}
-        return {"justification": "j", "category": "ADOPT" if tech in self.adopt else "HOLD", "confidence": "high", "relevance": "HIGH", "business_value": "b"}
-
-
-class FakeChat:
     def __init__(self, adopt):
-        self.adopt = adopt
+        self.adopt, self.seen = adopt, []
 
-    def with_structured_output(self, schema, method=None):
-        return Structured(schema, self.adopt)
+    def chat_json(self, system, user, schema):
+        tech = user.splitlines()[0].replace("Technology: ", "")
+        self.seen.append((system, user))
+        return {"quadrant": "Tools", "ring": "Adopt" if tech in self.adopt else "Hold", "summary": "s", "reason": "j", "confidence": "high",
+                "relevance": "HIGH", "business_value": "b"}
 
 
 gold = [dict(ITEM, name="Bar", key="bar", ring="Adopt"), dict(ITEM, name="Old", key="old", ring="Hold", basis="lifecycle", repo=None),
         dict(ITEM, name="Mid", key="mid", ring="Trial", basis="formal", repo=None)]
 cands = [rg.build_candidate(g, first if g["name"] == "Bar" else {"evidence": [], "own_repos": [], "errors": []}) for g in gold]
-ratings = rg.rate_agents(cands, FakeChat(adopt={"Bar", "Mid"}), parallel=2)
-outcomes = [rg.outcome(g, c, r) for g, c, r in zip(gold, cands, ratings)]
-assert [(o["name"], o["predicted"]) for o in outcomes] == [("Bar", "Adopt"), ("Old", "Assess"), ("Mid", "Assess")], outcomes   # no data -> Assess
-assert ratings[0]["route"] == "direct" and outcomes[0]["scored_lanes"] == {} and outcomes[0]["memo"] == "", "a widespread technology goes straight to the judge"
-assert outcomes[1]["lanes"] == []
-assert outcomes[0]["notes"] == [] and "Adopt" == outcomes[0]["llm_ring"]
+model = FakeModel(adopt={"Bar", "Mid"})
+done = []
+answers = rg.rate_all(cands, model, on_done=lambda i, c: done.append(c["name"]))
+outcomes = [rg.outcome(g, c, r) for g, c, r in zip(gold, cands, answers)]
+assert done == ["Bar", "Old", "Mid"] and len(model.seen) == 3, "one call per technology"
+assert model.seen[0][0] == ai_service.classify_system() and model.seen[0][1] == ai_service.classify_message(cands[0]), "the single prompt, as the app sends it"
+# Bar is 8 years old with 50,000 stars: widespread, so its Adopt stands. Mid has no repository and no evidence: the model's Adopt is capped
+assert [(o["name"], o["predicted"], o["llm_ring"]) for o in outcomes] == [("Bar", "Adopt", "Adopt"), ("Old", "Hold", "Hold"), ("Mid", "Trial", "Adopt")], outcomes
+assert outcomes[0]["standing"] == "widespread" and outcomes[2]["standing"] == "unknown" and outcomes[1]["lanes"] == []
+assert outcomes[0]["notes"] == [] and "ADOPT needs years of use at scale" in outcomes[2]["notes"][0]
 outcomes.append(rg.outcome(gold[0], cands[0], RuntimeError("model down")))
 assert outcomes[-1]["predicted"] is None and "model down" in outcomes[-1]["error"]
 summary = rg.summarize(outcomes)
-assert (summary["items"], summary["failed"], summary["exact"], summary["within_one"]) == (4, 1, 1, 3), summary
-assert summary["by_ring"]["Adopt"] == [1, 2] and summary["matrix"]["Hold"]["Assess"] == 1 and summary["by_basis"]["lifecycle"] == [0, 1]
-meta = {"model": "fake:1b", "host": "x", "mode": "agents", "seconds": 8.0}
+assert (summary["items"], summary["failed"], summary["exact"], summary["within_one"]) == (4, 1, 3, 3), summary
+assert summary["by_ring"]["Adopt"] == [1, 2] and summary["matrix"]["Adopt"]["Adopt"] == 1 and summary["by_basis"]["lifecycle"] == [1, 1]
+assert summary["by_standing"] == {"unknown": [2, 2], "widespread": [1, 2]}, summary["by_standing"]
+meta = {"model": "fake:1b", "host": "x", "mode": "classic", "seconds": 8.0}
 text = rg.format_report(meta, outcomes, summary)
-assert "exact ring: 1/4 = 25%" in text and "MISS Old" in text and "FAIL Bar" in text and "ok   Bar" in text and "within one ring: 3/4" in text
+assert "exact ring: 3/4 = 75%" in text and "FAIL Bar" in text and "ok   Bar" in text and "within one ring: 3/4" in text and "widespread 1/2" in text
 folder = os.path.join(tmp, "results")
 stem = rg.save_result(meta, outcomes, summary, folder)
 assert sorted(os.listdir(folder)) == [os.path.basename(stem) + ".json", os.path.basename(stem) + ".txt"]
-rg.save_result(dict(meta, model="other:2b", mode="classic", seconds=4.0), outcomes[:3], rg.summarize(outcomes[:3]), folder)
+rg.save_result(dict(meta, model="other:2b", seconds=4.0), outcomes[:3], rg.summarize(outcomes[:3]), folder)
 table = rg.compare(folder)
-assert "fake:1b/age" in table and "other:2b/cla" in table and "Assess x" in table and "exact ring" in table and "seconds per technology" in table, table
+assert "fake:1b/classic" in table and "other:2b/classic" in table and "3/4" in table and "3/3" in table and "exact ring" in table and "seconds per technology" in table, table
 assert rg.compare(os.path.join(tmp, "empty")).startswith("no saved results")
 rg.save_result(dict(meta, gold="heldout", rules="v2", seconds=6.0), outcomes[:3], rg.summarize(outcomes[:3]), folder)
-assert "fake:1b/age/v2" in rg.compare(folder), "a labelled run is a column of its own"
+assert "fake:1b/classic/v2" in rg.compare(folder), "a labelled run is a column of its own"
 only = rg.compare(folder, gold="heldout")
-assert "fake:1b/age/v2" in only and "other:2b" not in only, "compare(gold=...) keeps only the results for that list"
-assert "heldout-fake-1b-agents-v2-" in " ".join(os.listdir(folder)), os.listdir(folder)
-llm = types.SimpleNamespace(chat_json=lambda system, user, schema: {"quadrant": "Tools", "ring": "Adopt", "summary": "s", "reason": "r", "business_value": "b",
-                                                                  "relevance": "HIGH", "confidence": "high"})
-classic = rg.rate_classic(cands[:1], llm)
-assert rg.outcome(gold[0], cands[0], classic[0])["predicted"] == "Adopt"
-print("OK rating: agents and classic mode, failures counted, report, saved results and the side by side comparison")
+assert "fake:1b/classic/v2" in only and "other:2b" not in only, "compare(gold=...) keeps only the results for that list"
+assert "heldout-fake-1b-classic-v2-" in " ".join(os.listdir(folder)), os.listdir(folder)
+broken = types.SimpleNamespace(chat_json=lambda system, user, schema: (_ for _ in ()).throw(RuntimeError("model down")))
+failed = rg.rate_all(cands[:1], broken)
+assert isinstance(failed[0], RuntimeError) and rg.outcome(gold[0], cands[0], failed[0])["predicted"] is None
+print("OK rating: the single prompt and the rules, failures counted, report, saved results and the side by side comparison")
 
 # rescoring: the SAME model answers, the CURRENT rules (a change of the rules is measured without asking the model again)
 small = {"evidence": [{"source": "GitHub", "title": "foo/small", "url": "https://github.com/foo/small", "text": "t", "date": "2016-01-01",
@@ -181,10 +170,10 @@ small = {"evidence": [{"source": "GitHub", "title": "foo/small", "url": "https:/
                                 "license": "MIT", "archived": False, "forks": 1, "open_issues": 1}}], "own_repos": ["https://github.com/foo/small"], "errors": []}
 json.dump(small, open(os.path.join(tmp, "small.json"), "w", encoding="utf-8"))
 small_item = dict(ITEM, name="Small", key="small", ring="Trial", basis="formal", repo=None)
-small_rating = rg.rate_agents([rg.build_candidate(small_item, small)], FakeChat(adopt={"Small"}), parallel=1)
-small_outcome = rg.outcome(small_item, rg.build_candidate(small_item, small), small_rating[0])
-assert small_outcome["llm_ring"] == "Adopt" and small_outcome["predicted"] == "Trial" and small_outcome["memo"] == "Risk one. Risk two. Risk three."
-assert "ADOPT needs years of use at scale" in small_outcome["notes"][0], "a small technology gets the skeptic, and its ADOPT is capped by the guards"
+small_answer = rg.rate_all([rg.build_candidate(small_item, small)], FakeModel(adopt={"Small"}))
+small_outcome = rg.outcome(small_item, rg.build_candidate(small_item, small), small_answer[0])
+assert small_outcome["llm_ring"] == "Adopt" and small_outcome["predicted"] == "Trial" and small_outcome["standing"] == "emerging"
+assert "ADOPT needs years of use at scale" in small_outcome["notes"][0], "an old repository nobody uses: the model's ADOPT is capped by the guards"
 saved = {"meta": {"model": "m", "mode": "classic"},
          "outcomes": [{"name": "Small", "expected": "Trial", "basis": "formal", "lanes": [], "predicted": "Adopt", "llm_ring": "Adopt"},
                       {"name": "Bar", "expected": "Adopt", "basis": "ubiquity", "lanes": [], "predicted": "Adopt", "llm_ring": "Adopt"},
@@ -194,64 +183,7 @@ assert [(o["name"], o["predicted"]) for o in again] == [("Small", "Trial"), ("Ba
 assert again[0]["llm_ring"] == "Adopt" and "ADOPT needs years of use at scale" in again[0]["notes"][0] and again[1]["notes"] == []
 assert again[2] == saved["outcomes"][2], "a failed call stays failed"
 
-# the variants: the table that combines three small questions, and what each variant reads
-V = variants
-assert V.combine("retired", "widespread", "stable") == "Hold" and V.combine("active", "widespread", "stable") == "Adopt"
-assert V.combine("active", "widespread", "young") == "Trial" and V.combine("active", "established", "stable") == "Trial"
-assert V.combine("active", "niche", "stable") == "Assess" and V.combine("active", "unproven", "stable") == "Assess"
-assert V.combine("active", "widespread", "experimental") == "Assess" and V.combine("active", "established", "experimental") == "Assess"
-assert set(V.QUESTIONS) == {"lifecycle", "adoption", "maturity"} and all(V.question_schema(n, o)["properties"]["answer"]["enum"] == o for n, (_, o) in V.QUESTIONS.items())
-assert set(V.RING_OF_ADOPTION) == set(V.QUESTIONS["adoption"][1]) and set(V.RING_CAP_OF_MATURITY) == set(V.QUESTIONS["maturity"][1])
-seen = []
-
-
-class VariantChat:
-    def __init__(self, lifecycle="active"):
-        self.lifecycle = lifecycle
-
-    def with_structured_output(self, schema, method=None):
-        title, lifecycle = schema.get("title", "classify"), self.lifecycle
-
-        class Runnable:
-            async def ainvoke(self, messages):
-                (_, system), (_, user) = messages
-                seen.append((title, system, user))
-                if title == "verdict":
-                    return {"justification": "j", "category": "TRIAL", "confidence": "high", "relevance": "HIGH", "business_value": "b"}
-                if title == "classify":
-                    return {"quadrant": "Tools", "ring": "Adopt", "summary": "s", "reason": "r", "business_value": "b", "relevance": "HIGH", "confidence": "high"}
-                return {"reason": "r", "answer": {"lifecycle": lifecycle, "adoption": "widespread", "maturity": "stable"}[title.removeprefix("question_")]}
-
-        return Runnable()
-
-
-one = cands[:1]
-classic_facts = V.rate_all(one, VariantChat(), "classicfacts")[0]
-assert classic_facts["answer"]["ring"] == "Adopt"
-title, system, user = seen[-1]
-assert system == ai_service.classify_system() and user.startswith(ai_service.classify_message(cands[0])) and "Facts measured by code" in user
-seen.clear()
-asked = V.rate_all(one, VariantChat(), "questions")[0]
-assert asked["answer"]["ring"] == "Adopt" and asked["answer"]["reason"] == "lifecycle active; adoption widespread; maturity stable"
-assert sorted(t for t, _, _ in seen) == ["question_adoption", "question_lifecycle", "question_maturity"] and len({u for _, _, u in seen}) == 1, \
-    "three small questions, each reading the same whole picture"
-assert V.rate_all(one, VariantChat("retired"), "questions")[0]["answer"]["ring"] == "Hold"
-
-
-class Broken(VariantChat):
-    def with_structured_output(self, schema, method=None):
-        runnable = super().with_structured_output(schema, method)
-
-        class Wrong:
-            async def ainvoke(self, messages):
-                return {"reason": "r", "answer": "maybe"}
-        return Wrong() if schema["title"] == "question_adoption" else runnable
-
-
-assert isinstance(V.rate_all(one, Broken(), "questions")[0], ValueError), "an invalid answer is an error, never a guessed ring"
-fresh = rg.outcome(gold[0], cands[0], V.rate_all(one, VariantChat(), "questions")[0])
-assert fresh["predicted"] == "Adopt" and fresh["reason"].startswith("lifecycle active")
-print("OK rescoring with the current rules, and the variants: the table of three questions, what each variant reads, invalid answers fail")
+print("OK rescoring with the current rules: the model is not asked again, a failed call stays failed")
 
 # ------------------------------------------------------------------ verifying the labels against live sources (faked here)
 def verify_get(url, params=None, headers=None, timeout=None):

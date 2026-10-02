@@ -20,9 +20,8 @@ if "ollama" not in sys.modules:
 import config  # noqa: E402
 
 config.DATA_DIR = tempfile.mkdtemp()
-from services import export, pipeline, radar_chart, rss_service, storage  # noqa: E402
+from services import ai_service, export, pipeline, radar_chart, rss_service, storage  # noqa: E402
 from services import github_service, hn_service, registry_service, yc_service  # noqa: E402
-from services.radar_lanes import RISK_SCORES  # noqa: E402
 
 pipeline.CACHE_DIR = os.path.join(config.DATA_DIR, "cache")
 registry_service.PYPISTATS_GAP = 0   # no real pause between pypistats requests
@@ -143,6 +142,7 @@ class FakeLLM:
     def __init__(self):
         self.calls = 0
         self.batches = []
+        self.rated = []   # (technology, system prompt, user message) of every rating call
 
     def chat_json(self, system, user, schema):
         self.calls += 1
@@ -157,38 +157,12 @@ class FakeLLM:
                 if ids:
                     techs.append({"name": name, "quadrant": quadrant, "what": f"{name} is a thing", "items": ids})
             return {"technologies": techs}
-        raise AssertionError("rating no longer goes through chat_json: the agents use the chat model")
-
-
-class FakeChat:
-    """Stands in for ChatOllama on the rating agents: reads the technology from the prompt and answers per schema."""
-
-    def __init__(self):
-        self.asked = []   # (schema title, technology)
-
-    def with_structured_output(self, schema, method=None):
-        return FakeStructured(self, schema)
-
-
-class FakeStructured:
-    def __init__(self, chat, schema):
-        self.chat, self.schema = chat, schema
-
-    async def ainvoke(self, messages):
-        (_, system), (_, user) = messages
-        title, tech = self.schema["title"], user.splitlines()[0].replace("Technology: ", "")
-        self.chat.asked.append((title, tech))
-        if title.startswith("scorecard_"):
-            names = [n for n in self.schema["properties"] if n not in ("summary", "confidence")]
-            return {"summary": f"{title} says fine", "confidence": "medium",
-                    **{n: 2 if n in RISK_SCORES else 8 if n == "maturity" else 6 for n in names}}
-        if title == "risk_memo":
-            return {"biggest_risk": "Risk one.", "second_risk_or_unknown": "Risk two.",   # the fatal-flaw boolean is computed by code
-                    "what_must_be_true": "Risk three."}
-        category = "ADOPT" if tech in ("ty", "OpenTelemetry", "MCP", "Blazor") else "HOLD" if tech == "Kubernetes" else "ASSESS"
-        assert "licensing_risk above 7" in system and "own repository is archived" in system, "the rules of the guards must be written into the judge prompt"
-        return {"justification": "Because of <scores>.", "category": category, "confidence": "medium",
-                "relevance": "HIGH", "business_value": "IoT & medtech"}
+        assert user.startswith("Technology: ") and "Evidence:" in user, user   # rating: the single prompt
+        tech = user.splitlines()[0].replace("Technology: ", "")
+        self.rated.append((tech, system, user))
+        ring = "Adopt" if tech in ("ty", "OpenTelemetry", "MCP", "Blazor") else "Hold" if tech == "Kubernetes" else "Assess"
+        return {"quadrant": "Tools", "ring": ring, "summary": f"{tech} is a thing", "reason": "Because of the evidence.",
+                "business_value": "IoT & medtech", "relevance": "HIGH", "confidence": "medium"}
 
 
 settings = {"area": "All", "sources": config.SOURCES, "days": 30, "max_signals": 40, "top_n": 10,
@@ -196,9 +170,8 @@ settings = {"area": "All", "sources": config.SOURCES, "days": 30, "max_signals":
 config.RSS_FEEDS[:] = ["https://feed.infoq.com/", "https://martinfowler.com/feed.atom", "https://broken.example/feed"]
 pipeline.RSS_FEEDS = config.RSS_FEEDS
 llm = FakeLLM()
-chat = FakeChat()
 msgs = []
-result = pipeline.run_scan(settings, llm, lambda m, f: msgs.append((round(f, 2), m)), chat_model=chat)
+result = pipeline.run_scan(settings, llm, lambda m, f: msgs.append((round(f, 2), m)))
 
 titles = [s["title"] for s in result["signals"]]
 print("SIGNALS:", *[f"  {s['n']:>2} [{s['source']}] {s['title']}" for s in result["signals"]], sep="\n")
@@ -231,55 +204,45 @@ gh_batch = next(u for h, _, u in llm.batches if "GitHub" in h)
 assert "language: Rust" in gh_batch and "stars" in gh_batch, gh_batch
 hn_batch = next(u for h, _, u in llm.batches if "Hacker News" in h)
 assert "points" in hn_batch and "link: example.com" in hn_batch, hn_batch
-assert set(result["settings"]["prompts"]) == {"github", "ycombinator", "hackernews", "rss", "_rules", "classify", "rate_github",
-                                              "rate_ycombinator", "rate_hackernews", "rate_rss", "rate_packages", "antihype", "judge"}
+assert set(result["settings"]["prompts"]) == {"github", "ycombinator", "hackernews", "rss", "_rules", "classify"}
 
-# rating agents: only sources with data run, then one anti-hype and one judge call per technology
-rated = [t for t in result["technologies"] if "scorecards" in t]   # every technology is rated by the agents
-assert len(rated) == 5 == len(result["technologies"]) and all(t["scorecards"] and t["risk_memo"] for t in rated), \
-    "every technology carries its scorecards and memo"
-assert sorted(c["lane"] for c in techs["ty"]["scorecards"]) == ["github", "packages"], techs["ty"]["scorecards"]
-assert next(c for c in techs["ty"]["scorecards"] if c["lane"] == "github")["scores"]["licensing_risk"] == 1, "MIT license -> computed licensing_risk 1"
-assert techs["ty"]["evidence"][0]["meta"]["stars"] == 4200, "evidence keeps meta for the agents"
-assert sorted(c["lane"] for c in techs["OpenTelemetry"]["scorecards"]) == ["github", "hackernews", "packages"], "its RSS copy was a duplicate"
-assert sorted(c["lane"] for c in techs["MCP"]["scorecards"]) == ["hackernews", "rss"]
-assert [c["lane"] for c in techs["Blazor"]["scorecards"]] == ["rss"] and techs["Blazor"]["scorecards"][0]["confidence"] == "medium"
-assert {c["lane"]: c["confidence"] for c in techs["MCP"]["scorecards"]} == {"hackernews": "low", "rss": "low"}, "one story / one article"
-assert len(chat.asked) == sum(len(t["scorecards"]) + 2 for t in rated), chat.asked
+# rating: ONE call per technology with the single prompt, which reads every evidence line (registry numbers included)
+assert [t for t, _, _ in llm.rated].count("ty") == 1 and sorted(t for t, _, _ in llm.rated) == sorted(techs), llm.rated
+assert all(system == ai_service.classify_system() for _, system, _ in llm.rated), "the prompt of prompts/classify.md"
+ty_user = next(u for t, _, u in llm.rated if t == "ty")
+assert "Package registries: PyPI: ty - 180,000 downloads in the last 30 days" in ty_user and "astral-sh/ty" in ty_user, ty_user
+assert not any("scorecards" in t or "risk_memo" in t for t in result["technologies"]), "no agents: one prompt and the rules in code"
+assert techs["ty"]["standing"] == "new" and techs["Kubernetes"]["standing"] == "unknown" and techs["OpenTelemetry"]["standing"] == "unknown"
 
 # package registries, the fifth source: looked up per technology, only what can be tied to it, and never an extra "mention"
-by_lane = lambda t: {c["lane"]: c for c in t["scorecards"]}  # noqa: E731
-ty_card = by_lane(techs["ty"])["packages"]
-assert ty_card["scores"] == {"production_usage_score": 6, "integration_velocity_score": 6} and ty_card["confidence"] == "high"
-assert [(p["registry"], p["package"], p["match"]) for p in ty_card["metrics"]["packages"]] == [("pypi", "ty", "verified")], \
+registry = lambda t: [e for e in t["evidence"] if e["source"] == config.REGISTRY_SOURCE]  # noqa: E731
+ty_packages = [e["meta"] for e in registry(techs["ty"])]
+assert [(p["registry"], p["package"], p["match"]) for p in ty_packages] == [("pypi", "ty", "verified")], \
     "PyPI 'ty' links to the astral-sh/ty repository; the npm 'ty' belongs to someone else and is not counted"
-assert ty_card["metrics"]["packages"][0]["monthly"] == [30_000, 60_000, 90_000, 120_000, 150_000, 180_000]
-otel_card = by_lane(techs["OpenTelemetry"])["packages"]
-assert [(p["registry"], p["match"]) for p in otel_card["metrics"]["packages"]] == [("npm", "curated"), ("maven", "curated")]
-assert otel_card["metrics"]["packages"][0]["monthly"] == [3_000_000 * k for k in range(1, 13)]
-assert techs["ty"]["mentions"] == 1 and techs["ty"]["sources"] == ["GitHub"], "a download count is not a mention (Adopt needs 3+)"
+assert ty_packages[0]["monthly"] == [30_000, 60_000, 90_000, 120_000, 150_000, 180_000]
+otel_packages = [e["meta"] for e in registry(techs["OpenTelemetry"])]
+assert [(p["registry"], p["match"]) for p in otel_packages] == [("npm", "curated"), ("maven", "curated")]
+assert otel_packages[0]["monthly"] == [3_000_000 * k for k in range(1, 13)]
+assert techs["ty"]["mentions"] == 1 and techs["ty"]["sources"] == ["GitHub"], "a download count is not a mention"
 assert [e["source"] for e in techs["ty"]["evidence"]] == ["GitHub", "Package registries"], "the lookup is shown as evidence"
 assert techs["ty"]["evidence"][1]["url"] == "https://pypi.org/project/ty/"
-assert sorted(n for n, t in techs.items() if "scorecards" in t and "packages" in by_lane(t)) == ["OpenTelemetry", "ty"], \
-    "no package, no fifth agent"
+assert sorted(n for n, t in techs.items() if registry(t)) == ["OpenTelemetry", "ty"], "no package, no registry evidence"
 assert [u for u in REGISTRY_CALLS if "kubernetes" in u] == ["https://hub.docker.com/v2/repositories/library/kubernetes/"], \
     "without an own repository or a curated entry a name is only looked up as a Docker official image"
 assert len(REGISTRY_CALLS) == 11, REGISTRY_CALLS   # OpenTelemetry 3, ty 5, and 1 each for MCP, Kubernetes and Blazor
-print("AGENT CALLS:", len(chat.asked), "| extraction calls:", llm.calls, "| registry requests:", len(REGISTRY_CALLS))
+print("RATING CALLS:", len(llm.rated), "| extraction calls:", llm.calls - len(llm.rated), "| registry requests:", len(REGISTRY_CALLS))
 
 # source cache: a second scan with the network down reuses the fetched data, the registry lookups included
 for module in (github_service, yc_service, hn_service, rss_service, registry_service):
     module.requests.get = lambda *a, **k: (_ for _ in ()).throw(Exception("offline"))
-again = pipeline.run_scan(settings, FakeLLM(), chat_model=FakeChat())
+again = pipeline.run_scan(settings, FakeLLM())
 assert len(again["signals"]) == len(result["signals"]) and not again["errors"][1:], again["errors"]
-lanes = lambda r: {t["name"]: sorted(c["lane"] for c in t.get("scorecards", [])) for t in r["technologies"]}  # noqa: E731
-assert lanes(again) == lanes(result) and not any("Package registries" in e for e in again["errors"]), "registry lookups are cached too"
+found = lambda r: {t["name"]: [e["source"] for e in t["evidence"]] for t in r["technologies"]}  # noqa: E731
+assert found(again) == found(result) and not any("Package registries" in e for e in again["errors"]), "registry lookups are cached too"
 # without the fifth source nothing is looked up (the network is down, so a lookup would show up as a warning)
-without = pipeline.run_scan(dict(settings, sources=[s for s in config.SOURCES if s != config.REGISTRY_SOURCE]), FakeLLM(),
-                            chat_model=FakeChat())
-assert not any(c["lane"] == "packages" for t in without["technologies"] for c in t.get("scorecards", []))
+without = pipeline.run_scan(dict(settings, sources=[s for s in config.SOURCES if s != config.REGISTRY_SOURCE]), FakeLLM())
 assert not any(e["source"] == config.REGISTRY_SOURCE for t in without["technologies"] for e in t["evidence"])
-assert not any("Package registries" in e for e in without["errors"]) and "rate_packages" in without["settings"]["prompts"]
+assert not any("Package registries" in e for e in without["errors"])
 for module in (github_service, yc_service, hn_service, rss_service, registry_service):
     module.requests.get = fake_get
 assert msgs[-1][0] == 1.0
@@ -308,7 +271,7 @@ for days in (1, 5, 89, 91, 3650, 10**6, 10**12):
     assert abs(time.time() - since_hn - config.clamp_days(days) * 86400) < 5, (days, hn_params)
     assert old_enough == sum(1 for age in (2, 1, 4, 90) if age < days), (days, old_enough)   # ages of the RSS fixture's articles
 github_service.requests.get = real_get
-huge = pipeline.run_scan(dict(settings, days=10**9), FakeLLM(), chat_model=FakeChat())   # a whole scan with an absurd look-back
+huge = pipeline.run_scan(dict(settings, days=10**9), FakeLLM())   # a whole scan with an absurd look-back
 assert huge["settings"]["days"] == 10**9 and len(huge["signals"]) >= len(result["signals"]) and huge["technologies"]
 print("OK look-back: 1 to 10^12 days, GitHub / Hacker News / RSS windows, points-ranked Hacker News search")
 

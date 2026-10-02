@@ -1,6 +1,4 @@
 streamlit==1.64.0
 requests==2.34.2
 ollama==0.6.3
-langgraph==1.2.12
-langchain-ollama==1.1.0
 python-dotenv==1.2.3

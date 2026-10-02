@@ -25,13 +25,8 @@ BATCH_SIZE = 8             # signals per extraction call
 # would make Ollama reload the model every time).
 OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD") or 0) or None
 
-# Rating agents run in parallel on the local Ollama. Requests in flight at once = TECH x LANE.
-# Lower these (e.g. RADAR_LANE_CONCURRENCY=1) if the GPU runs out of memory or the model is slow.
-GRAPH_LANE_CONCURRENCY = int(os.getenv("RADAR_LANE_CONCURRENCY", "5"))   # source agents of ONE technology at once (5 = all)
-GRAPH_TECH_CONCURRENCY = int(os.getenv("RADAR_TECH_CONCURRENCY", "1"))   # technologies rated at once
-
 # The fifth source is different: it collects no signals. Once the other sources have named the technologies, each one is
-# looked up in the package registries (npm, PyPI, Maven Central, Docker Hub) and the Package registries agent rates its downloads.
+# looked up in the package registries (npm, PyPI, Maven Central, Docker Hub); the download numbers join the evidence the prompt reads.
 REGISTRY_SOURCE = "Package registries"
 SOURCES = ["GitHub", "Y Combinator", "Hacker News", "RSS feeds", REGISTRY_SOURCE]
 REGISTRY_WORKERS = 4   # technologies looked up in the registries at the same time

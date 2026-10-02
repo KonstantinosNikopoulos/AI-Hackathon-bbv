@@ -2,21 +2,19 @@
 
 For every technology it collects REAL evidence by name (its GitHub repository, Hacker News stories, engineering press articles,
 package registries) and saves it in data/eval/evidence, so every model is shown exactly the same facts. Then it rates the
-technology the way the app does (the source agents, anti-hype and judge, then the simple rules) and compares the ring with
-the gold one. Run it again with another model and compare.
+technology the way the app does (the single prompt, then the rules in code) and compares the ring with the gold one. Run it
+again with another model and compare.
 
-    python eval/run_gold.py --model qwen3:4b --host http://localhost:11435     all technologies, the full agents
+    python eval/run_gold.py --model qwen3:4b --host http://localhost:11435     all technologies
     python eval/run_gold.py --limit 2                                           2 per ring: a quick try
-    python eval/run_gold.py --mode classic                                      the old single prompt: what the model knows
-    python eval/run_gold.py --evidence-only                                     only collect and show what each lane has
+    python eval/run_gold.py --evidence-only                                     only collect and show what each source has
     python eval/run_gold.py --verify                                            re-check that the gold labels are still true
     python eval/run_gold.py --compare                                           side by side: every saved result
-    python eval/run_gold.py --rescore results/gold-qwen3-4b-classic-<time>.json   the same model answers, the current rules
-    python eval/run_gold.py --gold eval/heldout_radar.json                      the held-out set (technologies the rules were not designed on)
+    python eval/run_gold.py --rescore data/eval/results/<file>.json             the same model answers, the current rules: free
+    python eval/run_gold.py --gold eval/heldout_radar.json                      the held-out list (technologies the rules were not designed on)
     --rules v2                                                                  label a run, so a later --compare keeps it apart
 """
 import argparse
-import asyncio
 import glob
 import json
 import os
@@ -32,7 +30,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import config  # noqa: E402
-from services import ai_service, github_service, pipeline, radar_graph, radar_record, registry_service, rss_service  # noqa: E402
+from services import ai_service, github_service, pipeline, radar_record, registry_service, rss_service  # noqa: E402
 
 GOLD = os.path.join(ROOT, "eval", "gold_radar.json")
 EVAL_DIR = os.getenv("RADAR_EVAL_DIR") or os.path.join(ROOT, "data", "eval")   # data/ is git-ignored: evidence and results stay on this machine
@@ -171,34 +169,25 @@ def lanes_with_data(candidate):
 
 
 # ------------------------------------------------------------------ rating
-def rate_agents(candidates, chat_model, parallel=2, on_done=lambda i, c: None):
-    """The app's rating: source agents, anti-hype, judge. Returns, in order, the rating dict or the exception."""
-    radar_graph.TECH_CONCURRENCY = parallel
-    return asyncio.run(radar_graph.rate_all(radar_graph.build_graph(chat_model), candidates, on_done))
-
-
-def rate_classic(candidates, llm, on_done=lambda i, c: None):
-    """The old single prompt: one call per technology."""
+def rate_all(candidates, llm, on_done=lambda i, c: None):
+    """The app's rating: the single prompt, one call per technology. Returns, in order, the model's answer or the exception."""
     out = []
     for i, c in enumerate(candidates):
         try:
-            out.append({"answer": ai_service.classify_technology(llm, c), "rule_notes": [], "scorecards": [], "errors": [], "risk_memo": ""})
+            out.append(ai_service.classify_technology(llm, c))
         except Exception as error:
             out.append(error)
         on_done(i, c)
     return out
 
 
-def outcome(item, candidate, rating):
+def outcome(item, candidate, answer):
     base = {"name": item["name"], "expected": item["ring"], "basis": item["basis"], "lanes": lanes_with_data(candidate),
             "standing": radar_record.build_record(candidate)["standing"]}
-    if isinstance(rating, BaseException):
-        return {**base, "predicted": None, "error": f"{type(rating).__name__}: {rating}"}
-    answer = rating["answer"]
+    if isinstance(answer, BaseException):
+        return {**base, "predicted": None, "error": f"{type(answer).__name__}: {answer}"}
     ring, _, notes = pipeline.apply_rules(candidate, answer)
-    return {**base, "predicted": ring, "llm_ring": answer.get("ring"), "notes": rating["rule_notes"] + notes,
-            "scored_lanes": {c["lane"]: c["confidence"] for c in rating["scorecards"] if c["status"] == "scored"},
-            "reason": answer.get("reason", ""), "memo": rating.get("risk_memo", ""), "errors": rating["errors"]}
+    return {**base, "predicted": ring, "llm_ring": answer.get("ring"), "notes": notes, "reason": answer.get("reason", "")}
 
 
 def summarize(outcomes):
@@ -260,7 +249,8 @@ def compare(directory=None, gold=None):
         return "no saved results yet: run eval/run_gold.py first"
     keys = sorted(newest)
     names = list(dict.fromkeys(o["name"] for r in newest.values() for o in r["outcomes"]))
-    head = f"{'technology':<24} {'gold':<7}" + "".join(f"{m[:10] + '/' + mode[:3] + ('/' + rules[:8] if rules else ''):<19}" for m, mode, rules in keys)
+    short = {"classicfacts": "facts", "questions": "quest"}
+    head = f"{'technology':<24} {'gold':<7}" + "".join(f"{m[:8] + '/' + short.get(mode, mode) + ('/' + rules[:5] if rules else ''):<22}" for m, mode, rules in keys)
     rows = [head, "-" * len(head)]
     for name in names:
         cells = []
@@ -268,17 +258,16 @@ def compare(directory=None, gold=None):
             o = next((o for o in newest[k]["outcomes"] if o["name"] == name), None)
             cells.append("-" if o is None else f"{o['predicted'] or 'FAIL'}{'' if o['predicted'] == o['expected'] else ' x'}")
         gold = next(o["expected"] for r in newest.values() for o in r["outcomes"] if o["name"] == name)
-        rows.append(f"{name:<24} {gold:<7}" + "".join(f"{c:<19}" for c in cells))
+        rows.append(f"{name:<24} {gold:<7}" + "".join(f"{c:<22}" for c in cells))
     rows.append("-" * len(head))
-    rows.append(f"{'exact ring':<32}" + "".join(f"{newest[k]['summary']['exact']}/{newest[k]['summary']['items']:<17}" for k in keys))
-    rows.append(f"{'seconds per technology':<32}" + "".join(f"{newest[k]['meta']['seconds'] / max(newest[k]['summary']['items'], 1):<19.1f}" for k in keys))
+    rows.append(f"{'exact ring':<32}" + "".join(f"{newest[k]['summary']['exact']}/{newest[k]['summary']['items']:<20}" for k in keys))
+    rows.append(f"{'seconds per technology':<32}" + "".join(f"{newest[k]['meta']['seconds'] / max(newest[k]['summary']['items'], 1):<22.1f}" for k in keys))
     return "\n".join(rows)
 
 
 def rescore(result, items, directory=None):
     """A saved result with the CURRENT rules (pipeline.apply_rules) applied to the ring the model gave: the model is not asked again,
-    so a change of the rules is measured on exactly the same answers. Only valid for answers that the rules did not touch before
-    (the single prompt; the agents' judge, since the guards moved out of the graph into apply_rules)."""
+    so a change of the rules is measured on exactly the same answers."""
     by_name = {i["name"]: i for i in items}
     outcomes = []
     for o in result["outcomes"]:
@@ -353,13 +342,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default=config.DEFAULT_MODEL)
     ap.add_argument("--host", default=config.DEFAULT_OLLAMA_HOST)
-    ap.add_argument("--mode", choices=["agents", "classic", "classicfacts", "questions"], default="agents",
-                    help="agents: the app. classic: the old single prompt. classicfacts, questions: variants.py, see its docstring")
     ap.add_argument("--gold", default=GOLD, help="another list of technologies, e.g. eval/heldout_radar.json (the held-out set)")
     ap.add_argument("--rings", help="only these gold rings, e.g. Adopt,Hold")
     ap.add_argument("--names", help="only these technologies, comma separated")
     ap.add_argument("--limit", type=int, help="at most this many technologies per gold ring")
-    ap.add_argument("--parallel", type=int, default=2, help="technologies rated at once (default 2)")
     ap.add_argument("--refresh", action="store_true", help="collect the evidence again instead of reusing the saved one")
     ap.add_argument("--evidence-only", action="store_true")
     ap.add_argument("--verify", action="store_true")
@@ -403,19 +389,11 @@ def main(argv=None):
 
     started, done = time.time(), []
     progress = lambda i, c: (done.append(c), print(f"  rated {len(done)}/{len(candidates)}: {c['name']}", flush=True))  # noqa: E731
-    print(f"rating with {args.model} at {args.host} ({args.mode})...", flush=True)
-    if args.mode == "agents":
-        ratings = rate_agents(candidates, radar_graph.make_chat_model(args.host, args.model), args.parallel, progress)
-    elif args.mode == "classic":
-        ratings = rate_classic(candidates, ai_service.LLM(args.host, args.model), progress)
-    else:
-        import variants
-        ratings = variants.rate_all(candidates, radar_graph.make_chat_model(args.host, args.model), args.mode, args.parallel)
-        for c in candidates:
-            progress(0, c)
-    outcomes = [outcome(i, c, r) for i, c, r in zip(items, candidates, ratings)]
+    print(f"rating with {args.model} at {args.host}...", flush=True)
+    answers = rate_all(candidates, ai_service.LLM(args.host, args.model), progress)
+    outcomes = [outcome(i, c, r) for i, c, r in zip(items, candidates, answers)]
     summary = summarize(outcomes)
-    meta = {"model": args.model, "host": args.host, "mode": args.mode, "seconds": time.time() - started, "gold": gold, "rules": args.rules, "run_at": datetime.now().isoformat(timespec="seconds")}
+    meta = {"model": args.model, "host": args.host, "mode": "classic", "seconds": time.time() - started, "gold": gold, "rules": args.rules, "run_at": datetime.now().isoformat(timespec="seconds")}
     print("\n" + format_report(meta, outcomes, summary))
     print("\nsaved:", save_result(meta, outcomes, summary) + ".json / .txt")
     return 0

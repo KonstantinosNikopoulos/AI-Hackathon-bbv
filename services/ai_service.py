@@ -15,10 +15,6 @@ PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 # One extraction prompt per source (prompts/<file>.md) + shared rules (prompts/_rules.md).
 SOURCE_PROMPTS = {"GitHub": "github", "Y Combinator": "ycombinator", "Hacker News": "hackernews", "RSS feeds": "rss"}
 
-# Rating prompts of the multi-agent graph (services/radar_graph.py): one agent per source, a skeptic and a judge.
-RATING_PROMPTS = ["rate_github", "rate_ycombinator", "rate_hackernews", "rate_rss", "rate_packages", "antihype", "judge"]
-
-
 def prompt_path(name):
     return os.path.join(PROMPT_DIR, f"{name}.md")
 
@@ -36,7 +32,7 @@ def save_prompt(name, text):
 
 def prompt_versions():
     """Short fingerprint of every prompt, stored with each run so runs can be compared."""
-    names = list(SOURCE_PROMPTS.values()) + ["_rules", "classify"] + RATING_PROMPTS
+    names = list(SOURCE_PROMPTS.values()) + ["_rules", "classify"]
     return {n: hashlib.md5(load_prompt(n).encode()).hexdigest()[:8] for n in names}
 
 

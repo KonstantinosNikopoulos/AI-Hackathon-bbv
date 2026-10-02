@@ -9,7 +9,7 @@ Improved version of the original app in `C:\hackathon\tech-radar-ai` (that folde
 | Sources | GitHub, Y Combinator (first 5 matches) | GitHub, Y Combinator (newest batches first), Hacker News, 12 RSS feeds |
 | What gets rated | Each repo/startup | **Technologies** found across all signals, merged and ranked by mentions |
 | LLM answer | Free JSON, unknown rings disappear | JSON schema with fixed rings and quadrants, temperature 0 |
-| Rules | none | Repo younger than 6 months → max Assess; Adopt needs 3+ mentions from 2+ sources |
+| Rules | none | Facts only: archived repository or unusable license → Hold; younger than 6 months → max Assess; Adopt needs years of use at scale (see Rating) |
 | bbv context | generic "consulting company" | bbv services and industries in the prompt (edit in `config.py`) |
 | UI | Four lists | Round radar, KPI row, filters, Insights charts, table, details, signals, export |
 | Prompts | One prompt for everything | One extraction prompt per source, editable in the app |
@@ -26,7 +26,7 @@ python -m venv .venv
 pip install -r requirements.txt
 copy .env.example .env          # optional: add a GitHub token
 python tests\test_offline.py    # checks the logic without internet or Ollama
-python tests\test_graph.py      # checks the rating agents the same way
+python tests\test_record.py     # checks the facts, the standing and the rules
 python tests\test_registry.py   # checks the package registry lookup (fake answers, no internet)
 python tests\test_gold.py       # checks the gold-set harness (fake answers, no internet)
 streamlit run app.py
@@ -40,81 +40,52 @@ in that window, most starred first; Hacker News lists the most popular stories o
 search: the newest-first search used before returned only the last few days whatever the look-back); RSS feeds only list
 their newest items, so a long look-back adds little there.
 
-A scan makes up to `signals / 8 + 7 × technologies` LLM calls (default up to about 89; fewer in practice, because a source
-agent only runs when its source has data). Start with fewer signals and technologies for a quick test (e.g. 16 and 5).
+A scan makes `signals / 8 + technologies` LLM calls (default about 17: extraction batches plus one rating call per technology). Start with fewer signals and technologies for a quick test (e.g. 16 and 5).
 
-## Rating: five source agents, an anti-hype agent and a judge
+## Rating: one prompt per technology, then rules in code
 
-Each technology is rated by a [LangGraph](https://langchain-ai.github.io/langgraph/) pipeline (`services/radar_graph.py`)
-instead of one prompt. It is Map-Reduce: the agents never talk to each other, nothing loops.
+Each technology is rated by **one prompt** (`prompts/classify.md`) that reads everything collected about it: every dated evidence
+line from GitHub, Y Combinator, Hacker News, the RSS feeds and the package registries. It answers with the ring, a reason, the
+value for bbv and a relevance. Then **rules in code** (`services/radar_record.py`, applied by `pipeline.apply_rules`) check the
+facts a model cannot be trusted with, and every change is shown in the Details tab as a "Rule applied" note.
 
-```
- GitHub evidence ─────────► GitHub agent ──────────────────┐
- Y Combinator evidence ───► Y Combinator agent ────────────┤  (in parallel)
- Hacker News evidence ────► Hacker News agent ─────────────┤
- RSS evidence ────────────► RSS feeds agent ───────────────┤
- npm/PyPI/Maven/Docker ───► Package registries agent ──────┘
-                                     │ scorecards
-                                     ▼
-                            Anti-hype agent  (reasons to reject, risk memo)
-                                     ▼
-                            Judge  (decision matrix) ─► ring + justification
-```
+**The rules** (the only ones):
 
-| Agent | Reads | Scores (0-10) |
-| --- | --- | --- |
-| GitHub | stars per day, last push, forks, issues, license | `developer_velocity`, `project_health`, `licensing_risk` (computed in code from the license) |
-| Hacker News | points, comments, story titles | `community_support`, `developer_friction` |
-| RSS feeds | articles from engineering sites | `enterprise_traction`, `maturity` |
-| Y Combinator | startups building on it | `market_momentum`, `hype_risk` |
-| Package registries | monthly downloads and their trend (npm, PyPI), lifetime pulls and official vs unofficial images (Docker Hub), dependents and releases (npm, PyPI, Maven Central) | `production_usage_score`, `integration_velocity_score` (**1-10**) |
+- `licensing_risk` above 7 (AGPL, SSPL...) on its own repository → **Hold**
+- its own repository is **archived** → **Hold**
+- first seen less than 6 months ago (its main repository or a verified package) → at most **Assess**
+- **Adopt** needs years of use at scale (standing "widespread", below), otherwise at most **Trial**
 
-`developer_friction`, `hype_risk` and `licensing_risk` are risks: **higher is worse**. All numbers are computed in Python
-(`services/radar_lanes.py`); the model only judges them. The five source agents run in parallel (LangGraph `Send`), and
-only for sources that have evidence for that technology. Then the anti-hype agent writes a 3-sentence risk memo, and the
-judge picks the ring with `with_structured_output`. `fatal_flaws_found` is **computed by code** from the scorecards (a risk
-score of 7+, `project_health` or `maturity` of 2 or less, an archived repository) and the memo is written around those facts:
-asked to decide it, the 4B model once invented a score and flagged a healthy repository.
+**Standing** is measured, never guessed by the model: how old the technology is (from its biggest own repository and its verified
+packages; stories and articles can only prove that it is *old*, never that it is new, because a scan only sees recent items) and how
+much it is used. **new** (under 6 months) · **emerging** (under 3 years, or older with no traction) · **established** (3+ years, and a
+repository with 1,000+ stars, a package with 100,000+ downloads a month, an image with 10M+ pulls or 1,000+ dependents) ·
+**widespread** (established, and ten times that: 10,000+ stars, 1M+ downloads a month, 100M+ pulls, 10,000+ dependents) · **unknown**
+(nothing shows its age). The numbers are at the top of `services/radar_record.py`.
 
-**Decision matrix** (constants at the top of `services/radar_graph.py`, written into the judge prompt *and* enforced in code):
+**Not rules any more:** scores that a 4B model guessed from headlines (developer friction, hype risk, maturity) and the number of
+mentions. A first version made those vetoes (five source agents, an anti-hype agent and a judge) and on the 29 technologies of
+`eval/gold_radar.json` it scored 48% against 83% for the single prompt, with 0 of 9 Adopt right: headlines made Linux, PostgreSQL
+and Kubernetes look "frictioned". Splitting the prompt into smaller ones lost accuracy every time it was measured (see "Is the model
+right?" below), so the scan went back to one prompt. That code is in the git history (commit `55b63cf`).
 
-- `licensing_risk` above 7 (AGPL, SSPL, no license...) → **Hold**
-- fatal flaws found, or any risk score of 7 or more → at most **Assess**
-- **Adopt** needs `maturity` of at least 7 (only the RSS agent gives it; no RSS data → at most **Trial**)
-- a score from an agent that reports **low confidence** is weak evidence: a risk score from it does not cap the ring, and a
-  maturity score from it cannot justify Adopt. `licensing_risk` is computed by code, so it always counts.
-
-The agents cannot claim more confidence than the data allows (checked in code): e.g. one Hacker News story or one RSS article
-is always low, Hacker News and Y Combinator are never high, and `project_health` of a repository under 6 months old is at most 6.
-
-After the judge, the simple rules from before still apply (young repo, mentions). The Details tab shows each agent's
-scorecard, the anti-hype memo and the rules that were applied.
-
-### The Package registries agent (fifth source)
+### Package registries (fifth source)
 
 Hard production usage instead of social media hype: do people really download it, and does other software depend on it?
 This source collects no signals. After the technologies are merged, `pipeline.attach_registry_evidence` looks each one up in
 the registries (`services/registry_service.py`, no API keys: the npm downloads API, pypistats.org, Docker Hub, and
-ecosyste.ms for dependents and release dates) and adds the result to the technology's evidence. Its system prompt is
-`prompts/rate_packages.md`; the two scores are `production_usage_score` and `integration_velocity_score`, 1-10.
+ecosyste.ms for dependents and release dates) and adds the result to the technology's evidence, where the prompt reads it as one
+more dated line ("Package registries: PyPI: ty - 180,000 downloads in the last 30 days, ...") and the rules use it for the standing.
 
 - **A name is not proof.** npm has a package called `go`. A package is only used when it can be tied to the technology: it is
   listed in `PACKAGE_MAP` in `config.py` (extend it during the day), or its repository link is the technology's own GitHub
   repository, or it is a Docker official image (`library/<name>`), or a Docker image of that name under the repository's owner.
-- **It is not a mention.** `mentions` and `sources` do not change, so Adopt still needs 3+ mentions from 2+ sources.
+- **It is not a mention.** `mentions` and `sources` do not change: a download count is a measurement, not an article.
 - **What the registries can tell:** npm (12 months) and PyPI (6 months) give a monthly trend, Docker Hub gives lifetime pulls
   (the only lifetime number that exists), Maven Central publishes no download counts at all, only dependents and releases.
-- **Checked in code, like the other agents:** confidence comes from the data (a trend of 3+ months is high, a Docker pull count
-  or a dependents count is medium), growth is unknown without two months of downloads, and a package with under 6 months of history
-  cannot score above 7 because "sustained" is not proven.
-- **Advisory for the judge.** The decision matrix is unchanged: Adopt still needs `maturity`, which only the RSS agent gives.
 - **Limits:** pypistats.org answers fast bursts with HTTP 429, so PyPI requests are throttled and retried once; if it still
   refuses, the last month comes from ecosyste.ms and the trend is missing. Results are cached for an hour with the sources.
   A registry that fails is a warning, never an error that stops the scan.
-
-Parallel requests hit your local Ollama: at most `RADAR_TECH_CONCURRENCY × RADAR_LANE_CONCURRENCY` at once (default 1 × 5).
-If the model runs out of memory, set `RADAR_LANE_CONCURRENCY=1` in `.env`. Ollama usually serves one request at a time on a
-CPU anyway, so the parallel agents queue up there: correct, but not faster.
 
 **Ollama is extremely slow (under 1 token/s)?** On hybrid Intel CPUs (performance + efficiency cores), especially inside Docker
 or WSL, llama.cpp's default of "all cores" can be ~100× slower than a smaller thread count. Measured on a Core Ultra 7 in
@@ -138,19 +109,55 @@ Hold and Adopt are facts. Trial and Assess can only be certain against a stated 
 (Graduated = Adopt, Incubating = Trial, Sandbox = Assess, Archived = Hold). If bbv has a radar of its own, add its entries to the file
 with `"basis": "bbv"` and test against that instead.
 
+**Two lists, so that the rules are not just fitted to the list they were designed on.** The 29 technologies above are what the rules
+were diagnosed and designed on, so a number on them is optimistic by construction. `eval/heldout_radar.json` holds 43 technologies that
+nobody looked at while the rules were designed. `eval/build_heldout.py` draws them with a fixed seed (2026): 8 random CNCF projects per
+maturity level (Graduated with 10,000+ stars = Adopt, Incubating with 1,000+ = Trial, Sandbox with 100+ = Assess, Archived = Hold), plus
+12 outside cloud native, each with a check (Java, Node.js, Docker, nginx, Go and Spring Boot = Adopt; Dockershim, PodSecurityPolicy,
+Helm 2, CentOS Linux, PHP 5 and Apache Struts 1 = Hold). The rules were frozen before the first held-out run.
+
+**Results** (qwen3:4b, the same evidence for every row, exact ring):
+
+| How the ring is decided | gold, 29 (designed on) | held-out, 43 (checked on) |
+| --- | --- | --- |
+| **The single prompt, with the first rules** (mentions, RSS maturity) | 24/29 = 83% | 24/43 = 56% |
+| **The single prompt, with the rules in code (what the app does)** | **26/29 = 90%** | **34/43 = 79%** |
+| The single prompt plus the facts written into the prompt | 25/29 = 86% | not run |
+| Three small questions (alive? used? mature?) and a table | 22/29 = 76% | not run |
+| Five source agents + anti-hype + judge, new judge | 18/29 = 62% | not run |
+| Five source agents + anti-hype + judge, first rules | 14/29 = 48% | not run |
+
+Reading it: **more pieces, less accuracy.** The single prompt sees all the evidence at once and can use what the model knows (that
+Flash and Python 2 are retired); an agent that sees one source cannot, and a small model believes the confident digests it is
+handed. The rules in code add 7 points on the gold list and 23 on the held-out list, because they handle facts (an archived
+repository, a license, age) that the model gets wrong or ignores. Honest limits: the "Adopt needs scale" rule was added after the first
+results on the gold list, so 90% is optimistic; the held-out Adopt items were drawn with 10,000+ stars, so that rule is not
+independently tested there. A later design that sent only established technologies to the single prompt and the rest to the agents
+(not in the table; removed) scored 34/43 = 79% on the held-out list, the same as the single prompt alone, so the extra code earned
+nothing. Its held-out runs and the other variants' were stopped unfinished.
+
+
 ```powershell
-python eval/run_gold.py --model qwen3:4b --host http://localhost:11435   # all 29, with the five source agents, anti-hype and judge
+python eval/run_gold.py --model qwen3:4b --host http://localhost:11435   # all 29, the way the app rates
+python eval/run_gold.py --gold eval/heldout_radar.json                    # the held-out 43
 python eval/run_gold.py --limit 2                                         # 2 per ring: a quick try
-python eval/run_gold.py --mode classic                                    # the old single prompt: what the model itself knows
+python eval/run_gold.py --rescore data/eval/results/<file>.json           # the same model answers, the current rules: free
 python eval/run_gold.py --compare                                         # every saved result side by side, per technology
 ```
 
 For each technology it collects **real evidence by name** once (its GitHub repository, Hacker News stories, press articles from The New
 Stack, GitHub, .NET and CNCF blogs, and curated registry data) and saves it in `data/eval/evidence`, so every model is shown exactly
-the same facts. It then rates like the app (agents, then the simple rules) and prints the confusion matrix, the accuracy per ring, which
-lanes had data for every miss, and the rule notes. Results are saved in `data/eval/results`. A miss is not always the model's fault:
-no press evidence means Adopt is impossible (the decision matrix needs a maturity score), and a Hacker News story title can make a
-risk score a "fatal flaw". The table shows both.
+the same facts. It then rates like the app (the single prompt, then the rules) and prints the confusion matrix, the accuracy per ring
+and per standing, which sources had data for every miss, and the rule notes. Results are saved in `data/eval/results`
+(`--rules v4` labels a run so that `--compare` keeps it apart). GitHub's anonymous limit is 60 requests an hour: put a `GITHUB_TOKEN` in
+`.env` before collecting evidence for a long list.
+
+**Limits of these numbers.** The harness is *given* each technology's own repository (it is in the list), so it measures the rules
+and the model when the facts are known. A real scan only knows repositories that are named like the technology among its trending GitHub
+results, so most of its technologies have the standing "unknown" (Adopt capped at Trial) until their repository is found. Looking a
+repository up by name is possible, but a name can belong to something else (GitHub's biggest repository named "Python" is a list of
+algorithms), and a wrong "established" would relax the caps, so it is not done. Trial against Adopt is the hard
+part for a 4B model: CNCF *incubating* and *graduated* are decisions of a committee, not something a repository shows.
 
 ## Prompts: one per source
 
@@ -163,10 +170,7 @@ Each source has its own extraction prompt in `prompts/`, written for how that so
 | `prompts/hackernews.md` | Hacker News batches | Titles only: "Show HN: X" → X; skip opinion and business stories |
 | `prompts/rss.md` | Blog/news batches | Skip vendor marketing names; releases count without version |
 | `prompts/_rules.md` | Added to every source prompt | What counts as a technology, output rules |
-| `prompts/rate_github.md`, `rate_ycombinator.md`, `rate_hackernews.md`, `rate_rss.md`, `rate_packages.md` | The five source agents | Scoring rubric with anchors for each source |
-| `prompts/antihype.md` | Anti-hype agent | Hunts for reasons to reject, writes the risk memo |
-| `prompts/judge.md` | Judge | Rings, bbv context, the decision matrix |
-| `prompts/classify.md` | Old single rating prompt | No longer used by a scan (kept for `test_ai.py`) |
+| `prompts/classify.md` | The rating prompt | Rates one technology in one call from all its evidence: rings, how to weigh each source, bbv context |
 
 Batches never mix sources, so each batch gets its own prompt. Each source also sends the model only its useful
 fields (GitHub: language, stars, topics, created date; YC: batch, tags; HN: points, comments, link domain; RSS: site, summary).
@@ -184,16 +188,16 @@ to re-run quickly with a new prompt on the same data.
 | `services/github_service.py`, `yc_service.py`, `hn_service.py`, `rss_service.py` | Collect signals |
 | `services/registry_service.py` | Looks a technology up in npm, PyPI, Maven Central and Docker Hub (the fifth source) |
 | `services/pipeline.py` | Clean → extract technologies → merge and rank → rate → rules |
-| `prompts/*.md` | The LLM prompts (one per source + shared rules + rating) |
+| `prompts/*.md` | The LLM prompts (one per source + shared rules + the rating prompt) |
 | `services/ai_service.py` | Loads prompts, formats items per source, JSON schemas, Ollama client |
-| `services/radar_graph.py` | The rating graph: state, parallel source agents, anti-hype, judge, decision matrix |
-| `services/radar_lanes.py` | What each source agent sees: metrics computed in code, license risk, package download facts, score schemas |
+| `services/radar_record.py` | The rules in code: facts about a technology (age, traction, archived, license), its standing, and the guards |
 | `services/radar_chart.py` | Draws the radar (SVG, no extra library) |
 | `services/storage.py` | Saves runs, compares with the previous run |
 | `services/export.py` | Markdown and CSV downloads |
 | `tests/test_offline.py` | End-to-end test with fake sources and a fake LLM |
-| `tests/test_graph.py` | Rating agents: facts, decision matrix, parallelism, errors (no Ollama needed) |
-| `eval/gold_radar.json`, `eval/run_gold.py` | Known technologies with a certain ring, and the harness that tests a model against them |
+| `tests/test_record.py` | Facts, standing and rules: age tied to the technology, scale, archived, license (no Ollama needed) |
+| `eval/gold_radar.json`, `eval/heldout_radar.json`, `eval/run_gold.py` | Known technologies with a certain ring (the list the rules were designed on, and the held-out list), and the harness that tests a model against them |
+| `eval/build_heldout.py` | Draws the held-out list by rules and a fixed seed |
 | `tests/test_gold.py` | The gold-set harness: collectors, rating, report, label checks (no internet needed) |
 | `tests/test_registry.py` | Registry lookup: curated and verified packages, rate limits, failures (fake answers, no internet) |
 

@@ -1,5 +1,4 @@
 """The scan: collect signals -> clean -> LLM extracts technologies -> merge and rank -> LLM proposes rings."""
-import asyncio
 import json
 import os
 import re
@@ -8,8 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
 from config import BATCH_SIZE, DATA_DIR, PACKAGE_MAP, QUADRANTS, REGISTRY_SOURCE, REGISTRY_WORKERS, RINGS, RSS_FEEDS
-from services import (ai_service, github_service, hn_service, radar_graph, radar_record, registry_service, rss_service,
-                      yc_service)
+from services import (ai_service, github_service, hn_service, radar_record, registry_service, rss_service, yc_service)
 
 NOISE = re.compile(r"\b(raises|funding|series [a-d]|acquires|acquisition|layoffs?|hiring|podcast|webinar|"
                    r"episode|newsletter|sponsored|discount)\b", re.IGNORECASE)
@@ -214,9 +212,8 @@ def apply_rules(candidate, answer):
     return ring, quadrant, notes
 
 
-def run_scan(settings, llm, progress=lambda msg, frac: None, chat_model=None):
-    """llm: the Ollama wrapper (extraction). chat_model: the LangChain model for the rating agents,
-    built from llm when not given (tests pass a fake)."""
+def run_scan(settings, llm, progress=lambda msg, frac: None):
+    """llm: the Ollama wrapper: it extracts the technologies and rates each one with the single prompt."""
     started = datetime.now()
     settings = dict(settings, prompts=ai_service.prompt_versions())
     raw, errors = collect_signals(settings, lambda m, f: progress(m, 0.15 * f))
@@ -242,35 +239,23 @@ def run_scan(settings, llm, progress=lambda msg, frac: None, chat_model=None):
     if REGISTRY_SOURCE in settings["sources"]:   # the fifth source needs the technologies, so it runs after the merge
         errors += attach_registry_evidence(candidates, settings, lambda m, f: progress(m, 0.6 + 0.05 * f))
 
-    # Rating: per technology, one agent per source runs in parallel, then a skeptic and a judge (services/radar_graph.py).
-    graph = radar_graph.build_graph(chat_model or radar_graph.make_chat_model(llm.host, llm.model))
-    finished = []
-
-    def rated(i, c):
-        finished.append(c)
-        progress(f"LLM agents: rated {c['name']} ({len(finished)}/{len(candidates)})...",
-                 0.65 + 0.35 * len(finished) / max(len(candidates), 1))
-
-    progress(f"LLM agents: rating {len(candidates)} technologies (up to 5 source agents, a skeptic and a judge each)...", 0.65)
-    results = asyncio.run(radar_graph.rate_all(graph, candidates, rated))
-
+    # Rating: ONE prompt per technology (prompts/classify.md) reads all its evidence, then the guards in code (apply_rules).
     technologies = []
-    for c, rating in zip(candidates, results):
-        if isinstance(rating, BaseException):
-            errors.append(f"Rate {c['name']}: {rating}")
+    for i, c in enumerate(candidates):
+        progress(f"LLM: rating {c['name']} ({i + 1}/{len(candidates)})...", 0.65 + 0.35 * i / max(len(candidates), 1))
+        try:
+            answer = ai_service.classify_technology(llm, c)
+        except Exception as error:
+            errors.append(f"Classify {c['name']}: {error}")
             continue
-        errors += rating["errors"]
-        answer = rating["answer"]
         ring, quadrant, notes = apply_rules(c, answer)
-        notes = rating["rule_notes"] + notes   # the judge's decision matrix first, then the simple rules
         technologies.append({
             "name": c["name"], "ring": ring, "quadrant": quadrant, "llm_ring": answer.get("ring"),
             "relevance": answer.get("relevance", "LOW"), "confidence": answer.get("confidence", "low"),
             "summary": answer.get("summary", ""), "reason": answer.get("reason", ""),
             "business_value": answer.get("business_value", ""), "rule_notes": notes,
             "mentions": c["mentions"], "sources": c["sources"], "evidence": c["evidence"],
-            "scorecards": rating["scorecards"], "risk_memo": rating["risk_memo"],
-            "fatal_flaws_found": rating["fatal_flaws_found"], "standing": rating.get("standing", ""), "route": rating.get("route", ""),
+            "standing": radar_record.build_record(c)["standing"],
         })
 
     progress("Done", 1.0)

@@ -130,18 +130,13 @@ assert guard("Adopt", agpl) == ("Hold", ["Adopt → Hold: licensing_risk is 9 (l
 assert guard("Trial", record(repo(created=years_ago(10), stars=50_000, license="none")))[0] == "Trial", "no license is 7: not above 7"
 assert guard("Adopt", record(repo(created=years_ago(10), stars=50_000, license="NOASSERTION")))[0] == "Adopt", "unclassified license is 5"
 assert guard("Adopt", record(repo(created=years_ago(10), stars=50_000, license=None)))[0] == "Adopt", "an unknown license is not a risk to act on"
-assert rr.fatal_flaws(archived) == ["the repository a/foo0 is archived"] and rr.fatal_flaws(agpl) == ["licensing_risk is 9 (license AGPL-3.0)"]
-assert rr.fatal_flaws(widespread) == [] and rr.fatal_flaws(nothing) == []
 only_old_repo_archived = record(repo(0, created=years_ago(12), stars=20, archived=True), repo(1, created=years_ago(9), stars=40_000))
-assert rr.fatal_flaws(only_old_repo_archived) == [], "an archived side repository does not archive the technology"
-# a model's opinion is never a rule: headlines that sound critical cannot move a ring (the first rules vetoed Linux this way)
-assert rr.matrix_rules() == rr.matrix_rules() and all(isinstance(r, str) for r in rr.matrix_rules())
-text = " ".join(rr.matrix_rules())
-assert "above 7" in text and "archived" in text and "6 months" in text and "3+ years" in text and "10k+ stars" in text and "1M+ downloads" in text
-assert "developer_friction" not in text and "maturity" not in text and "hype_risk" not in text
+assert guard("Adopt", only_old_repo_archived)[0] == "Adopt", "an archived side repository does not archive the technology"
+# a model's opinion is never a rule: only facts move a ring (the first rules vetoed Linux on the strength of headlines)
+assert not any(hasattr(rr, name) for name in ("matrix_rules", "fatal_flaws", "ADOPT_MIN_MATURITY", "ASSESS_CAP_IF_ANY_RISK_AT_LEAST"))
 print("OK guards: archived, license and too new -> a ring cap or Hold; ADOPT needs years at scale; nothing else is a rule")
 
-# pipeline.apply_rules is those guards (for the single prompt and the agents alike) plus the quadrant
+# pipeline.apply_rules is those guards plus the quadrant
 c = candidate(repo(created=days_ago(40), stars=5000))
 assert pipeline.apply_rules(c, {"ring": "Adopt", "quadrant": "Tools"})[0] == "Assess"
 ring, quadrant, notes = pipeline.apply_rules(candidate(repo(created=years_ago(10), stars=50_000)), {"ring": "Adopt", "quadrant": "Platforms"})
@@ -149,15 +144,7 @@ assert (ring, quadrant, notes) == ("Adopt", "Platforms", [])
 assert pipeline.apply_rules(candidate(repo(created=years_ago(10), stars=50_000)), {"ring": "nonsense", "quadrant": "nonsense"})[:2] == ("Assess", "Tools")
 print("OK pipeline.apply_rules uses the guards")
 
-# the judge reads the record as text
-text = rr.format_record(widespread)
-assert "Standing: widespread (years old and used at scale)." in text and "Traction: 50k stars." in text
-assert "Its own GitHub repository a/foo0: 50k stars, created" in text and "license MIT, not archived" in text and "last push 2 days ago" in text
-assert "ARCHIVED (read-only, unmaintained)" in rr.format_record(archived)
-no_repo_text = rr.format_record(no_repo)
-assert "No GitHub repository of its own was found for it." in no_repo_text and "stories and articles" in no_repo_text
-pkg_text = rr.format_record(record(package(first_release=years_ago(8), last_30d=2_000_000, dependent_packages=15_000), own=False))
-assert "Package npm foo: 2M downloads in the last 30 days, 15k dependent packages." in pkg_text
-assert "Standing: unknown (nothing shows how old it is). No traction measured." in rr.format_record(nothing)
-print("OK the record as text for the judge")
+# license risk (moved here from the agents' facts): 0-10, risky licenses above 7
+assert [rr.license_risk(x) for x in ("MIT", "Apache-2.0", "MPL-2.0", "GPL-3.0", "AGPL-3.0", "SSPL-1.0", "none", "NOASSERTION", "AGPL-1.0")]     == [1, 1, 3, 6, 9, 9, 7, 5, 9]
+print("OK license risk")
 print("ALL RECORD TESTS PASSED")

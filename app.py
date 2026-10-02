@@ -38,18 +38,14 @@ def swatch(quadrant):
 PROMPT_LABELS = {
     "GitHub": "github", "Y Combinator": "ycombinator", "Hacker News": "hackernews", "RSS feeds": "rss",
     "Shared rules (added to every source prompt)": "_rules",
-    "Rating agent: GitHub": "rate_github", "Rating agent: Y Combinator": "rate_ycombinator",
-    "Rating agent: Hacker News": "rate_hackernews", "Rating agent: RSS feeds": "rate_rss",
-    "Rating agent: Package registries (npm, PyPI, Maven Central, Docker Hub)": "rate_packages",
-    "Anti-hype agent (looks for reasons to reject)": "antihype", "Judge (new and unproven technologies: reads the agents, picks the ring)": "judge",
-    "Single prompt (established technologies: rated directly, without the agents)": "classify",
+    "Rating prompt (one call per technology: proposes the ring from all its evidence)": "classify",
 }
 
 
 def prompt_editor(signals):
     st.write("Each source has its own **extraction prompt**, tuned to how that source works. The shared rules are "
-             "added to every source prompt. Rating is done by **agents**: one per source scores the evidence, an "
-             "anti-hype agent looks for reasons to reject, and a judge picks the ring. Saved changes apply to the next scan.")
+             "added to every source prompt. Rating is ONE prompt per technology: it reads all the evidence and proposes the ring, "
+             "then rules in code check the facts. Saved changes apply to the next scan.")
     choice = st.selectbox("Prompt", list(PROMPT_LABELS), key="prompt_choice")
     name = PROMPT_LABELS[choice]
     text = st.text_area("Prompt text", ai_service.load_prompt(name), height=360, key=f"prompt_text_{name}")
@@ -103,9 +99,8 @@ with st.sidebar:
     top_n = st.slider("Technologies to rate", 5, 25, DEFAULT_TOP_N)
     use_cache = st.checkbox("Reuse sources fetched in the last hour", value=True,
                             help="Saves time and the GitHub rate limit while you tune prompts. Untick for fresh data.")
-    calls = math.ceil(max_signals / BATCH_SIZE) + top_n * 7   # per technology: up to 5 source agents + anti-hype + judge
-    st.caption(f"Up to ≈ {calls} LLM calls per scan (a source agent only runs when its source has data). "
-               "On a CPU expect about 10–30 s each.")
+    calls = math.ceil(max_signals / BATCH_SIZE) + top_n   # extraction batches + one rating call per technology
+    st.caption(f"≈ {calls} LLM calls per scan. On a CPU expect about 10–30 s each.")
     # Package registries only look up what the other sources found, so at least one of those is needed.
     scan = st.button("🔍 Scan & analyze", type="primary", disabled=not any(s != REGISTRY_SOURCE for s in sources))
 
@@ -154,9 +149,9 @@ if not result:
 2. **Clean**: drop noise (funding, hiring…) and duplicates, mix sources fairly.
 3. **Extract**: the LLM names the technologies the signals are about.
 4. **Merge and rank**: the same technology from several sources counts more.
-5. **Rate**: one agent per source scores the evidence in parallel (the package registries agent reads real npm, PyPI,
-   Maven Central and Docker Hub download numbers), an anti-hype agent looks for reasons to reject, and a judge
-   proposes a ring using a decision matrix; simple rules check it (e.g. a 3-month-old repo can't be *Adopt*).
+5. **Rate**: one prompt per technology reads all its evidence (including real npm, PyPI, Maven Central and Docker Hub
+   download numbers) and proposes a ring; rules in code check the facts (an archived repo or an unusable license is *Hold*,
+   a project under 6 months old is at most *Assess*, *Adopt* needs years of use at scale).
 """)
     with st.expander("🧠 Prompts"):
         prompt_editor([])
@@ -311,9 +306,7 @@ with tab_details:
                 st.write(f"**Confidence:** {t['confidence']} · **Mentions:** {t['mentions']} from "
                          f"{len(t['sources'])} source(s)")
                 if t.get("standing"):
-                    how = ("directly by the single prompt, because it is established" if t.get("route") == "direct"
-                           else "by the source agents, a skeptic and a judge, because it is not established")
-                    st.caption(f"Standing: {t['standing']} · rated {how}")
+                    st.caption(f"Standing: {t['standing']}")
                 for note in t.get("rule_notes", []):
                     st.caption(f"Rule applied: {note}")
                 if t.get("scorecards"):
