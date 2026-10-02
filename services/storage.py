@@ -26,7 +26,7 @@ def list_runs():
                 r = json.load(f)
             s = r.get("settings", {})
             label = (f"{r['run_at'].replace('T', ' ')} · {s.get('area', '?')} · {s.get('model', '?')} · "
-                     f"{len([t for t in r.get('technologies', []) if not t.get('is_seed')])} technologies")
+                     f"{len(r.get('technologies', []))} technologies")
         except Exception:
             label = os.path.basename(p)
         runs.append((p, label))
@@ -53,7 +53,7 @@ def load_run(path):
 def compare(previous, current):
     """Status per technology name, using the Thoughtworks words: New, Moved In, Moved Out, No Change."""
     if not previous:
-        return {t["name"]: ("" if t.get("is_seed") else "New") for t in current["technologies"]}
+        return {t["name"]: "New" for t in current["technologies"]}
     before = {tech_key(t["name"]): t for t in previous.get("technologies", [])}
     statuses = {}
     for t in current["technologies"]:

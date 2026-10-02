@@ -150,7 +150,7 @@ s = result["settings"]
 previous = storage.previous_run(result)
 statuses = storage.compare(previous, result)
 techs = result["technologies"]
-proposed = [t for t in techs if not t.get("is_seed")]
+proposed = techs
 
 st.caption(f"Scan of {result['run_at'].replace('T', ' ')} · area **{s['area']}** · model **{s['model']}** · "
            f"compared with {'run of ' + previous['run_at'].replace('T', ' ') if previous else 'nothing (first run for this area)'}")
@@ -169,16 +169,14 @@ for i, ring in enumerate(RINGS):
 k[6].metric("✨ New", sum(1 for t in proposed if statuses.get(t["name"]) == "New"))
 
 # Filters (one row, apply to every tab)
-f1, f2, f3, f4 = st.columns([2, 2, 2, 1])
+f1, f2, f3 = st.columns([2, 2, 2])
 quadrant_filter = f1.multiselect("Quadrant", QUADRANTS, default=QUADRANTS)
 relevance_filter = f2.multiselect("Relevance for bbv", ["HIGH", "MEDIUM", "LOW"], default=["HIGH", "MEDIUM", "LOW"])
 search = f3.text_input("Search", placeholder="e.g. rust, agent, kubernetes")
-show_seed = f4.toggle("Seed entries", value=True, help="bbv's known technologies from config.py")
 
 shown = [t for t in techs
          if t["quadrant"] in quadrant_filter
-         and (t.get("is_seed") or t.get("relevance", "LOW") in relevance_filter)
-         and (show_seed or not t.get("is_seed"))
+         and t.get("relevance", "LOW") in relevance_filter
          and (not search or search.lower() in (t["name"] + " " + t.get("summary", "") + " " + t.get("reason", "")).lower())]
 
 svg, numbered = radar_html(shown, statuses)
@@ -195,7 +193,7 @@ with tab_radar:
             components.html(radar_doc, height=730)
         except AttributeError:  # fallback if a future Streamlit drops components.html
             st.html(radar_doc)
-        st.caption("Hover a blip for its reason. Square = seed entry (already known to bbv), dashed ring = new since last run.")
+        st.caption("Hover a blip for its reason. Dashed ring = new since the last run of this area.")
     with right:
         for q in QUADRANTS:
             items = [t for t in numbered if t["quadrant"] == q]
@@ -230,7 +228,7 @@ with tab_insights:
             st.altair_chart(chart, width="stretch")
         with c2:
             st.subheader("Strongest signals")
-            st.caption("Mentions across all sources (seed entries excluded)")
+            st.caption("Mentions across all sources")
             top = df[df["Mentions"] > 0].sort_values("Mentions", ascending=False).head(12)
             chart = alt.Chart(top).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
                 y=alt.Y("Technology:N", sort="-x", title=None),
@@ -328,4 +326,4 @@ with tab_export:
                        file_name=f"radar-{stamp}.csv", mime="text/csv")
     e3.download_button("🧾 Full data (JSON)", json.dumps(result, ensure_ascii=False, indent=2),
                        file_name=f"tech-radar-{stamp}.json", mime="application/json")
-    st.caption("The CSV works with Thoughtworks *Build Your Own Radar* (needs all four quadrants – keep the seed entries on).")
+    st.caption("The CSV works with Thoughtworks *Build Your Own Radar* (it needs at least one technology in each of the four quadrants).")

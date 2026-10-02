@@ -94,9 +94,7 @@ def radar_html(technologies, statuses=None, size=720):
         parts.append(f'<g class="blip"><title>{esc(tip)}</title>')
         if status == "New":
             parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{blip_r + 4}" class="new-ring q-stroke-{q}"/>')
-        shape = (f'<rect x="{x - blip_r:.1f}" y="{y - blip_r:.1f}" width="{2 * blip_r}" height="{2 * blip_r}" rx="4" '
-                 f'class="dot q-{q}"/>') if t.get("is_seed") else \
-                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{blip_r}" class="dot q-{q}"/>'
+        shape = f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{blip_r}" class="dot q-{q}"/>'
         parts.append(shape)
         parts.append(f'<text x="{x:.1f}" y="{y + 4:.1f}" class="num ink-{q}">{t["number"]}</text></g>')
     parts.append("</svg>")

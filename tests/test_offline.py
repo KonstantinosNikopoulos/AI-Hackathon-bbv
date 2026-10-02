@@ -137,9 +137,8 @@ print("TECHNOLOGIES:", *[f"  {t['name']}: {t['ring']} ({t['quadrant']}) mentions
 assert "AI" not in techs, "generic word should be dropped"
 assert techs["ty"]["ring"] == "Assess" and techs["ty"]["llm_ring"] == "Adopt", "young repo rule"
 assert techs["OpenTelemetry"]["ring"] == "Trial", "Adopt needs 3+ mentions"
-assert techs["Kubernetes"]["is_seed"] and techs["Kubernetes"]["ring"] == "Adopt", "seed ring must win over the model"
-assert techs["Kubernetes"]["mentions"] == 1 and any("Kept bbv" in n for n in techs["Kubernetes"]["rule_notes"])
-assert techs["TypeScript"]["is_seed"] and techs["TypeScript"]["mentions"] == 0, "unmatched seeds still added"
+assert techs["Kubernetes"]["ring"] == "Hold" and techs["Kubernetes"]["mentions"] == 1, "model ring used as is"
+assert set(techs) == {"OpenTelemetry", "MCP", "ty", "Kubernetes"}, "only technologies found in the signals"
 
 # one prompt per source: every batch holds one source and gets that source's system prompt
 print("BATCHES:", *[f"  {head} -> system starts: {sys_line[:60]}" for head, sys_line, _ in llm.batches], sep="\n")
@@ -160,7 +159,6 @@ again = pipeline.run_scan(settings, FakeLLM())
 assert len(again["signals"]) == len(result["signals"]) and not again["errors"][1:], again["errors"]
 for module in (github_service, yc_service, hn_service, rss_service):
     module.requests.get = fake_get
-assert {t["quadrant"] for t in result["technologies"]} == set(config.QUADRANTS), "all quadrants filled"
 assert msgs[-1][0] == 1.0
 
 # YC sorting by batch
@@ -175,7 +173,7 @@ assert storage.previous_run(second)["run_at"] == result["run_at"]
 st2 = storage.compare(result, second)
 assert st2["MCP"] == "Moved Out" and st2["OpenTelemetry"] == "No Change", st2
 st1 = storage.compare(None, result)
-assert st1["OpenTelemetry"] == "New" and st1["Kubernetes"] == "", st1
+assert st1["OpenTelemetry"] == "New" and st1["Kubernetes"] == "New", st1
 
 # radar + exports
 svg, numbered = radar_chart.radar_html(result["technologies"], st1)

@@ -5,7 +5,7 @@ import re
 import time
 from datetime import date, datetime
 
-from config import BATCH_SIZE, DATA_DIR, QUADRANTS, RINGS, RSS_FEEDS, SEED_RADAR
+from config import BATCH_SIZE, DATA_DIR, QUADRANTS, RINGS, RSS_FEEDS
 from services import ai_service, github_service, hn_service, rss_service, yc_service
 
 NOISE = re.compile(r"\b(raises|funding|series [a-d]|acquires|acquisition|layoffs?|hiring|podcast|webinar|"
@@ -196,7 +196,6 @@ def run_scan(settings, llm, progress=lambda msg, frac: None):
 
     candidates = merge_candidates(signals, extractions, settings["top_n"])
 
-    seeds = {tech_key(x["name"]): x for x in SEED_RADAR}
     technologies = []
     for i, c in enumerate(candidates):
         progress(f"LLM: rating {c['name']} ({i + 1}/{len(candidates)})...", 0.6 + 0.4 * i / max(len(candidates), 1))
@@ -206,28 +205,13 @@ def run_scan(settings, llm, progress=lambda msg, frac: None):
             errors.append(f"Classify {c['name']}: {error}")
             continue
         ring, quadrant, notes = apply_rules(c, answer)
-        seed = seeds.get(c["key"])
-        if seed:  # bbv's own knowledge wins over the model; the evidence is still shown
-            if seed["ring"] != ring:
-                notes.append(f"Kept bbv's ring {seed['ring']} (model proposed {ring})")
-            ring, quadrant = seed["ring"], seed["quadrant"]
         technologies.append({
-            "name": seed["name"] if seed else c["name"], "ring": ring, "quadrant": quadrant, "llm_ring": answer.get("ring"),
+            "name": c["name"], "ring": ring, "quadrant": quadrant, "llm_ring": answer.get("ring"),
             "relevance": answer.get("relevance", "LOW"), "confidence": answer.get("confidence", "low"),
             "summary": answer.get("summary", ""), "reason": answer.get("reason", ""),
             "business_value": answer.get("business_value", ""), "rule_notes": notes,
-            "mentions": c["mentions"], "sources": c["sources"], "evidence": c["evidence"], "is_seed": bool(seed),
+            "mentions": c["mentions"], "sources": c["sources"], "evidence": c["evidence"],
         })
-
-    proposed = {tech_key(t["name"]) for t in technologies}
-    for s in SEED_RADAR:
-        if tech_key(s["name"]) not in proposed:
-            technologies.append({
-                "name": s["name"], "ring": s["ring"], "quadrant": s["quadrant"], "llm_ring": None,
-                "relevance": "HIGH", "confidence": "high", "summary": "Known to bbv (seed radar).",
-                "reason": "Part of bbv's current radar.", "business_value": "", "rule_notes": [],
-                "mentions": 0, "sources": [], "evidence": [], "is_seed": True,
-            })
 
     progress("Done", 1.0)
     return {

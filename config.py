@@ -60,13 +60,4 @@ RSS_FEEDS = [
     "https://interrupt.memfault.com/feed.xml",
 ]
 
-# What bbv already knows. Placeholders: replace with bbv's real radar.
-# They keep all quadrants filled and make new proposals stand out.
-SEED_RADAR = [
-    {"name": "Kubernetes", "ring": "Adopt", "quadrant": "Platforms"},
-    {"name": "TypeScript", "ring": "Adopt", "quadrant": "Languages & Frameworks"},
-    {"name": "GitHub Actions", "ring": "Adopt", "quadrant": "Tools"},
-    {"name": "Trunk-based development", "ring": "Trial", "quadrant": "Techniques"},
-]
-
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "runs")

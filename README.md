@@ -59,7 +59,7 @@ to re-run quickly with a new prompt on the same data.
 | File | What it does |
 | --- | --- |
 | `app.py` | Streamlit UI |
-| `config.py` | All settings: rings, quadrants, bbv context, RSS feeds, seed radar, defaults |
+| `config.py` | All settings: rings, quadrants, bbv context, RSS feeds, defaults |
 | `services/github_service.py`, `yc_service.py`, `hn_service.py`, `rss_service.py` | Collect signals |
 | `services/pipeline.py` | Clean → extract technologies → merge and rank → rate → rules |
 | `prompts/*.md` | The LLM prompts (one per source + shared rules + rating) |
@@ -71,7 +71,7 @@ to re-run quickly with a new prompt on the same data.
 
 ## Ideas for the hackathon day
 
-- Replace `SEED_RADAR` and `BBV_CONTEXT` in `config.py` with bbv's real technologies and services.
+- Replace `BBV_CONTEXT` in `config.py` with bbv's real services and industries.
 - Add aliases and generic words in `services/pipeline.py` when the model returns duplicates or noise.
 - Compare `llama3.2:3b` and `qwen3:4b` on the same settings using the saved runs.
 - Let the team vote on each blip and measure agreement for the pitch.
