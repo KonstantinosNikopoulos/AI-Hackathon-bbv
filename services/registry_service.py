@@ -10,8 +10,8 @@ A name is not proof (npm has a package called "go"), so a package is only return
   verified  its repository link is one of the technology's own GitHub repositories (pipeline.merge_candidates: own_repos)
   official  a Docker official image (library/<name>)
   owner     a Docker image of that name under the owner of the technology's GitHub repository
-Everything comes back as evidence items (source "Package registries") for the Package registries agent
-(radar_lanes._packages). A package the registry does not know is not an error; a registry that fails adds a warning to `errors`."""
+Everything comes back as evidence items (source "Package registries"): the rating prompt reads them as dated lines
+(ai_service.evidence_lines) and radar_record uses them for the standing. A package the registry does not know is not an error; a registry that fails adds a warning to `errors`."""
 import re
 import threading
 import time
@@ -30,7 +30,7 @@ NPM_LAG_DAYS = 2         # npm counts a day about two days late: the newest two 
 PYPI_MONTHS = 6          # pypistats keeps 180 days
 PYPISTATS_GAP = 1.0      # seconds between pypistats requests: it answers bursts with HTTP 429
 RETRY_WAIT = 5           # seconds to wait before the one retry after an HTTP 429
-MAX_RECORDS = 6          # packages per technology that reach the agent
+MAX_RECORDS = 6          # packages per technology that reach the prompt
 
 LABELS = {"npm": "npm", "pypi": "PyPI", "maven": "Maven Central", "docker": "Docker Hub"}
 ECOSYSTEMS = {"npm": "npmjs.org", "pypi": "pypi.org", "maven": "repo1.maven.org"}   # ecosyste.ms registry names
@@ -161,7 +161,7 @@ def _docker(repo, match, errors):
 
 
 def _evidence(meta):
-    """The item the pipeline stores and the agent reads: the usual evidence fields, with the numbers in `meta`."""
+    """The item the pipeline stores and the prompt reads: the usual evidence fields, with the numbers in `meta`."""
     registry, package = meta["registry"], meta["package"]
     if registry == "docker" and meta["official"]:
         url = f"https://hub.docker.com/_/{package.split('/')[1]}"

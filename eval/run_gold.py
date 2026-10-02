@@ -152,7 +152,7 @@ def collect_evidence(item, refresh=False, directory=None):
 
 
 def build_candidate(item, collected):
-    """What pipeline.merge_candidates would hand to the agents. Registry data is evidence, not a mention."""
+    """What pipeline.merge_candidates would hand to the rating prompt. Registry data is evidence, not a mention."""
     evidence = collected["evidence"]
     signals = [e for e in evidence if e["source"] != config.REGISTRY_SOURCE]
     created = next((e["meta"].get("created_at") for e in signals if e["source"] == "GitHub"), None)

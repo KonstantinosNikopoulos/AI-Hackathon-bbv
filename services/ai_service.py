@@ -163,7 +163,7 @@ def extract_technologies(llm, signals, source=None):
 
 
 def evidence_lines(candidate):
-    """Every evidence item of a candidate as one dated line. The single prompt and the judge of the agents read the same lines."""
+    """Every evidence item of a candidate as one dated line. The rating prompt reads these lines."""
     return [f"- {e.get('date') or 'n/a'} {e['source']}: {e['title']} - {e['text']}" for e in candidate["evidence"]]
 
 

@@ -144,7 +144,7 @@ assert (ring, quadrant, notes) == ("Adopt", "Platforms", [])
 assert pipeline.apply_rules(candidate(repo(created=years_ago(10), stars=50_000)), {"ring": "nonsense", "quadrant": "nonsense"})[:2] == ("Assess", "Tools")
 print("OK pipeline.apply_rules uses the guards")
 
-# license risk (moved here from the agents' facts): 0-10, risky licenses above 7
+# license risk: 0-10, risky licenses above 7
 assert [rr.license_risk(x) for x in ("MIT", "Apache-2.0", "MPL-2.0", "GPL-3.0", "AGPL-3.0", "SSPL-1.0", "none", "NOASSERTION", "AGPL-1.0")]     == [1, 1, 3, 6, 9, 9, 7, 5, 9]
 print("OK license risk")
 print("ALL RECORD TESTS PASSED")

@@ -20,7 +20,7 @@ ALIASES = {
 }
 GENERIC = {"ai", "artificial intelligence", "machine learning", "ml", "llm", "llms", "large language models",
            "generative ai", "genai", "cloud", "cloud computing", "security", "cybersecurity", "open source",
-           "software", "api", "apis", "data", "devops", "agents", "ai agents", "automation", "web", "app", "apps"}
+           "software", "api", "apis", "data", "devops", "agent", "agents", "ai agents", "automation", "web", "app", "apps"}
 
 
 SOURCE_ORDER = ["GitHub", "Y Combinator", "Hacker News", "RSS feeds"]
@@ -116,11 +116,11 @@ def select_signals(signals, max_signals):
     return picked
 
 
-EVIDENCE_PER_SOURCE = 3  # each rating agent reads one source, so cap per source (it was 5 in total)
+EVIDENCE_PER_SOURCE = 3  # evidence lines per source in the rating prompt, so one busy source cannot crowd out the others
 
 
 def trim_evidence(evidence):
-    """Keep the first few items of every source, with `meta` (stars, points, ...) which the rating agents need."""
+    """Keep the first few items of every source, with `meta` (stars, points, ...) which the rules and the registry lookup need."""
     kept, count = [], {}
     for e in evidence:
         if count.get(e["source"], 0) < EVIDENCE_PER_SOURCE:
@@ -175,8 +175,8 @@ def merge_candidates(signals, extractions, top_n):
 
 def attach_registry_evidence(candidates, settings, progress=lambda msg, frac: None):
     """The fifth source: look every technology up in the package registries (npm, PyPI, Maven Central, Docker Hub) and add what
-    was found to its evidence, where the Package registries agent reads it. `mentions` and `sources` stay as they are: a
-    download count is not a mention, so Adopt still needs 3+ mentions from 2+ sources. Returns the warnings."""
+    was found to its evidence, where the rating prompt reads it. `mentions` and `sources` stay as they are: a download count
+    is not a mention. Returns the warnings."""
 
     def lookup(c):
         name = f"packages {c['key']}"
@@ -205,7 +205,7 @@ def attach_registry_evidence(candidates, settings, progress=lambda msg, frac: No
 def apply_rules(candidate, answer):
     """Checks in code what the prompt asks, so a small model cannot break the rules. Only facts are rules (radar_record.apply_guards:
     an archived repository, a license nobody can use, a technology too new to be proven, ADOPT without years of use); what a model
-    only guessed from headlines never overrules the judge. The same guards apply to the single prompt and to the agents."""
+    only guessed from headlines never overrules the model's ring."""
     ring = answer.get("ring") if answer.get("ring") in RINGS else "Assess"
     ring, notes = radar_record.apply_guards(ring, radar_record.build_record(candidate))
     quadrant = answer.get("quadrant") if answer.get("quadrant") in QUADRANTS else candidate["quadrant"]

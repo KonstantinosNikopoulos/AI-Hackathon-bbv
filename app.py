@@ -81,14 +81,15 @@ with st.sidebar:
     else:
         st.caption("🔴 Ollama not reachable at this address")
         options = SUGGESTED_MODELS
-    default_index = options.index(DEFAULT_MODEL) if DEFAULT_MODEL in options else 0
+    # The configured model, else qwen3:4b (the one the rules were measured with), else the first one installed.
+    default_index = next((options.index(m) for m in (DEFAULT_MODEL, "qwen3:4b") if m in options), 0)
     model = st.selectbox("Model", options, index=default_index,
                          help="llama3.2:3b is fastest. qwen3:4b usually gives better reasons.")
 
     area = st.selectbox("Technology area", list(AREAS))
     sources = st.multiselect("Sources", SOURCES, default=SOURCES,
                              help=f"{REGISTRY_SOURCE} collect no signals: they look up the technologies the other sources "
-                                  "found in npm, PyPI, Maven Central and Docker Hub, and rate their download numbers.")
+                                  "found in npm, PyPI, Maven Central and Docker Hub; the download numbers join the evidence the prompt reads.")
     days = int(st.number_input("Look back (days)", min_value=1, value=DEFAULT_DAYS, step=1,
                                help="Any number of days, for example 365 or 3650 to include older projects. GitHub: repositories "
                                     "created in that window, most starred first. Hacker News: the most popular stories of the "

@@ -59,7 +59,8 @@ facts a model cannot be trusted with, and every change is shown in the Details t
 **Standing** is measured, never guessed by the model: how old the technology is (from its biggest own repository and its verified
 packages; stories and articles can only prove that it is *old*, never that it is new, because a scan only sees recent items) and how
 much it is used. **new** (under 6 months) · **emerging** (under 3 years, or older with no traction) · **established** (3+ years, and a
-repository with 1,000+ stars, a package with 100,000+ downloads a month, an image with 10M+ pulls or 1,000+ dependents) ·
+repository with 1,000+ stars, a package with 100,000+ downloads a month, an image with 10M+ pulls or 1,000+ dependents; with no repository
+at all, 3 or more stories or articles about it) ·
 **widespread** (established, and ten times that: 10,000+ stars, 1M+ downloads a month, 100M+ pulls, 10,000+ dependents) · **unknown**
 (nothing shows its age). The numbers are at the top of `services/radar_record.py`.
 
@@ -111,7 +112,7 @@ with `"basis": "bbv"` and test against that instead.
 
 **Two lists, so that the rules are not just fitted to the list they were designed on.** The 29 technologies above are what the rules
 were diagnosed and designed on, so a number on them is optimistic by construction. `eval/heldout_radar.json` holds 43 technologies that
-nobody looked at while the rules were designed. `eval/build_heldout.py` draws them with a fixed seed (2026): 8 random CNCF projects per
+nobody looked at while the rules were designed. `eval/build_heldout.py` draws them with a fixed seed (2026): up to 8 random CNCF projects per
 maturity level (Graduated with 10,000+ stars = Adopt, Incubating with 1,000+ = Trial, Sandbox with 100+ = Assess, Archived = Hold), plus
 12 outside cloud native, each with a check (Java, Node.js, Docker, nginx, Go and Spring Boot = Adopt; Dockershim, PodSecurityPolicy,
 Helm 2, CentOS Linux, PHP 5 and Apache Struts 1 = Hold). The rules were frozen before the first held-out run.
@@ -170,7 +171,7 @@ Each source has its own extraction prompt in `prompts/`, written for how that so
 | `prompts/hackernews.md` | Hacker News batches | Titles only: "Show HN: X" → X; skip opinion and business stories |
 | `prompts/rss.md` | Blog/news batches | Skip vendor marketing names; releases count without version |
 | `prompts/_rules.md` | Added to every source prompt | What counts as a technology, output rules |
-| `prompts/classify.md` | The rating prompt | Rates one technology in one call from all its evidence: rings, how to weigh each source, bbv context |
+| `prompts/classify.md` | The rating prompt | Rates one technology in one call from all its evidence: rings, how to weigh GitHub, Hacker News, RSS and Y Combinator evidence, bbv context |
 
 Batches never mix sources, so each batch gets its own prompt. Each source also sends the model only its useful
 fields (GitHub: language, stars, topics, created date; YC: batch, tags; HN: points, comments, link domain; RSS: site, summary).

@@ -2,7 +2,7 @@
 
 gold_radar.json is the set the rules were diagnosed on. To know that a rule change is not just fitted to those 29 technologies, the
 result is also measured on this second set, which is drawn here by rules and a fixed seed, not by hand:
-  - 32 projects drawn at random from the public CNCF landscape, 8 per maturity level (Graduated -> Adopt, Incubating -> Trial,
+  - up to 32 projects drawn at random from the public CNCF landscape, 8 per maturity level (fewer when too few qualify) (Graduated -> Adopt, Incubating -> Trial,
     Sandbox -> Assess, Archived -> Hold), each with a GitHub repository, never one that is already in gold_radar.json.
     Graduated needs 10,000 stars, Incubating 1,000, Sandbox 100 (so "Adopt" means widely used), Archived needs an archived repository.
   - 12 hand-listed technologies outside cloud native whose ring is a fact (6 Adopt, 6 Hold), each with a check.

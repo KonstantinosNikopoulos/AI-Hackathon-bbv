@@ -2,3 +2,4 @@ streamlit==1.64.0
 requests==2.34.2
 ollama==0.6.3
 python-dotenv==1.2.3
+PyYAML==6.0.3          # eval/build_heldout.py and run_gold.py --verify read the CNCF landscape
