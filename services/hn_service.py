@@ -5,13 +5,15 @@ from urllib.parse import urlparse
 
 import requests
 
-from config import AREAS
+from config import AREAS, clamp_days
 
-HN_URL = "https://hn.algolia.com/api/v1/search_by_date"
+# "search" ranks by points, so the 100 hits are the most popular stories of the WHOLE window. "search_by_date" returned the
+# newest 100 instead: a 30-day look-back only covered the last 4 days, and 90 or 3650 days gave the very same stories.
+HN_URL = "https://hn.algolia.com/api/v1/search"
 
 
 def get_hn_stories(limit=15, technology_area="All", days=30, min_points=150):
-    since = int(time.time() - days * 86400)
+    since = int(time.time() - clamp_days(days) * 86400)
     response = requests.get(
         HN_URL,
         params={"tags": "story", "numericFilters": f"points>{min_points},created_at_i>{since}", "hitsPerPage": 100},

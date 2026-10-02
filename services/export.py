@@ -3,6 +3,8 @@ import csv
 import html
 import io
 
+from config import REGISTRY_SOURCE
+
 
 def byor_csv(technologies, statuses):
     """Columns: name, ring, quadrant, isNew, status, description (HTML allowed)."""
@@ -21,11 +23,13 @@ def byor_csv(technologies, statuses):
 
 def markdown_report(result, statuses, numbered):
     s = result["settings"]
+    signal_sources = [x for x in s["sources"] if x != REGISTRY_SOURCE]   # package registries add no signals
+    registries = " · package registries checked" if REGISTRY_SOURCE in s["sources"] else ""
     lines = [
         "# bbv Technology Radar",
         "",
         f"Scan: {result['run_at'].replace('T', ' ')} · area {s['area']} · model {s['model']} · "
-        f"{result['stats'].get('signals', 0)} signals from {', '.join(s['sources'])}",
+        f"{result['stats'].get('signals', 0)} signals from {', '.join(signal_sources)}{registries}",
         "",
         "Rings are proposals by a local LLM, checked against simple rules. Review before use.",
         "",

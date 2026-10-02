@@ -14,11 +14,39 @@ DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 SUGGESTED_MODELS = ["llama3.2:3b", "qwen3:4b", "qwen3:8b", "gemma3:4b"]
 
 DEFAULT_DAYS = 30          # only signals from the last N days (GitHub: repos created in that window)
+MAX_DAYS = 36500           # the look-back is any whole number of days; 100 years is the limit (keeps date maths from overflowing)
 DEFAULT_MAX_SIGNALS = 40   # signals sent to the LLM for extraction
 DEFAULT_TOP_N = 12         # technologies that get a ring
 BATCH_SIZE = 8             # signals per extraction call
 
-SOURCES = ["GitHub", "Y Combinator", "Hacker News", "RSS feeds"]
+# CPU threads llama.cpp may use per request. Empty = Ollama decides (all cores). On hybrid Intel CPUs (P + E cores),
+# especially inside Docker/WSL, "all cores" can be ~100x slower: measured 0.17 tok/s with 16 threads vs 17.8 tok/s with 6.
+# Set OLLAMA_NUM_THREAD to about the number of performance cores. Used for ALL calls (a different value between calls
+# would make Ollama reload the model every time).
+OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD") or 0) or None
+
+# Rating agents run in parallel on the local Ollama. Requests in flight at once = TECH x LANE.
+# Lower these (e.g. RADAR_LANE_CONCURRENCY=1) if the GPU runs out of memory or the model is slow.
+GRAPH_LANE_CONCURRENCY = int(os.getenv("RADAR_LANE_CONCURRENCY", "5"))   # source agents of ONE technology at once (5 = all)
+GRAPH_TECH_CONCURRENCY = int(os.getenv("RADAR_TECH_CONCURRENCY", "1"))   # technologies rated at once
+
+# The fifth source is different: it collects no signals. Once the other sources have named the technologies, each one is
+# looked up in the package registries (npm, PyPI, Maven Central, Docker Hub) and the Package registries agent rates its downloads.
+REGISTRY_SOURCE = "Package registries"
+SOURCES = ["GitHub", "Y Combinator", "Hacker News", "RSS feeds", REGISTRY_SOURCE]
+REGISTRY_WORKERS = 4   # technologies looked up in the registries at the same time
+
+# Which packages ARE a technology. Key: the technology as the radar names it (lower case, after the ALIASES in
+# services/pipeline.py). Value: package names per registry (Maven: "group:artifact", Docker: "namespace/image", an official
+# image is "library/<name>"). Extend this during the day.
+# Without an entry the lookup only accepts a Docker official image of that name, and an npm/PyPI package of that name if its
+# repository link is the technology's own GitHub repository: a matching name alone is never evidence (see registry_service.py).
+PACKAGE_MAP = {
+    "model context protocol": {"npm": ["@modelcontextprotocol/sdk"], "pypi": ["mcp"]},
+    "opentelemetry": {"npm": ["@opentelemetry/api"], "pypi": ["opentelemetry-api"],
+                      "maven": ["io.opentelemetry:opentelemetry-api"]},
+    "langgraph": {"npm": ["@langchain/langgraph"], "pypi": ["langgraph"]},
+}
 
 # Edit this: it tells the LLM what "relevant for bbv" means.
 BBV_CONTEXT = (
@@ -61,3 +89,8 @@ RSS_FEEDS = [
 ]
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "runs")
+
+
+def clamp_days(days):
+    """The look-back every source uses: any whole number of days. Less than 1 means 1, more than MAX_DAYS means MAX_DAYS."""
+    return max(1, min(int(days), MAX_DAYS))
