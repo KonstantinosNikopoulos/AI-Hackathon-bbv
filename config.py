@@ -18,6 +18,17 @@ DEFAULT_MAX_SIGNALS = 40   # signals sent to the LLM for extraction
 DEFAULT_TOP_N = 12         # technologies that get a ring
 BATCH_SIZE = 8             # signals per extraction call
 
+# CPU threads llama.cpp may use per request. Empty = Ollama decides (all cores). On hybrid Intel CPUs (P + E cores),
+# especially inside Docker/WSL, "all cores" can be ~100x slower: measured 0.17 tok/s with 16 threads vs 17.8 tok/s with 6.
+# Set OLLAMA_NUM_THREAD to about the number of performance cores. Used for ALL calls (a different value between calls
+# would make Ollama reload the model every time).
+OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD") or 0) or None
+
+# Rating agents run in parallel on the local Ollama. Requests in flight at once = TECH x LANE.
+# Lower these (e.g. RADAR_LANE_CONCURRENCY=1) if the GPU runs out of memory or the model is slow.
+GRAPH_LANE_CONCURRENCY = int(os.getenv("RADAR_LANE_CONCURRENCY", "4"))   # source agents of ONE technology at once
+GRAPH_TECH_CONCURRENCY = int(os.getenv("RADAR_TECH_CONCURRENCY", "1"))   # technologies rated at once
+
 SOURCES = ["GitHub", "Y Combinator", "Hacker News", "RSS feeds"]
 
 # Edit this: it tells the LLM what "relevant for bbv" means.

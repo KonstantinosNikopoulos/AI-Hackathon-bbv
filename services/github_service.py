@@ -46,6 +46,12 @@ def get_trending_repositories(limit=5, technology_area="AI / LLM", days=90, min_
                 "language": repo.get("language"),
                 "topics": repo.get("topics", []),
                 "created_at": (repo.get("created_at") or "")[:10],
+                # Already in the search response; used by the GitHub rating agent. "none" = no license at all.
+                "pushed_at": (repo.get("pushed_at") or "")[:10],
+                "forks": repo.get("forks_count", 0),
+                "open_issues": repo.get("open_issues_count", 0),
+                "license": (repo.get("license") or {}).get("spdx_id") or "none",
+                "archived": bool(repo.get("archived")),
             },
         })
     return repositories

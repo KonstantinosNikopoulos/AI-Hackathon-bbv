@@ -26,13 +26,70 @@ python -m venv .venv
 pip install -r requirements.txt
 copy .env.example .env          # optional: add a GitHub token
 python tests\test_offline.py    # checks the logic without internet or Ollama
+python tests\test_graph.py      # checks the rating agents the same way
 streamlit run app.py
 ```
 
 Ollama must be running (`docker compose up -d` in `C:\hackathon`) with the model you pick in the sidebar,
 for example `docker exec -it ollama ollama pull llama3.2:3b` or `... pull qwen3:4b`.
 
-A scan makes about `signals / 8 + technologies` LLM calls (default about 17). Start with fewer signals for a quick test.
+A scan makes up to `signals / 8 + 6 × technologies` LLM calls (default up to about 77; fewer in practice, because a source
+agent only runs when its source has data). Start with fewer signals and technologies for a quick test (e.g. 16 and 5).
+
+## Rating: four source agents, an anti-hype agent and a judge
+
+Each technology is rated by a [LangGraph](https://langchain-ai.github.io/langgraph/) pipeline (`services/radar_graph.py`)
+instead of one prompt. It is Map-Reduce: the agents never talk to each other, nothing loops.
+
+```
+ GitHub evidence ────────► GitHub agent ──────────┐
+ Y Combinator evidence ──► Y Combinator agent ────┤  (in parallel)
+ Hacker News evidence ───► Hacker News agent ─────┤
+ RSS evidence ───────────► RSS feeds agent ───────┘
+                                    │ scorecards
+                                    ▼
+                           Anti-hype agent  (reasons to reject, risk memo)
+                                    ▼
+                           Judge  (decision matrix) ─► ring + justification
+```
+
+| Agent | Reads | Scores (0-10) |
+| --- | --- | --- |
+| GitHub | stars per day, last push, forks, issues, license | `developer_velocity`, `project_health`, `licensing_risk` (computed in code from the license) |
+| Hacker News | points, comments, story titles | `community_support`, `developer_friction` |
+| RSS feeds | articles from engineering sites | `enterprise_traction`, `maturity` |
+| Y Combinator | startups building on it | `market_momentum`, `hype_risk` |
+
+`developer_friction`, `hype_risk` and `licensing_risk` are risks: **higher is worse**. All numbers are computed in Python
+(`services/radar_lanes.py`); the model only judges them. The four source agents run in parallel (LangGraph `Send`), and
+only for sources that have evidence for that technology. Then the anti-hype agent writes a 3-sentence risk memo, and the
+judge picks the ring with `with_structured_output`. `fatal_flaws_found` is **computed by code** from the scorecards (a risk
+score of 7+, `project_health` or `maturity` of 2 or less, an archived repository) and the memo is written around those facts:
+asked to decide it, the 4B model once invented a score and flagged a healthy repository.
+
+**Decision matrix** (constants at the top of `services/radar_graph.py`, written into the judge prompt *and* enforced in code):
+
+- `licensing_risk` above 7 (AGPL, SSPL, no license...) → **Hold**
+- fatal flaws found, or any risk score of 7 or more → at most **Assess**
+- **Adopt** needs `maturity` of at least 7 (only the RSS agent gives it; no RSS data → at most **Trial**)
+- a score from an agent that reports **low confidence** is weak evidence: a risk score from it does not cap the ring, and a
+  maturity score from it cannot justify Adopt. `licensing_risk` is computed by code, so it always counts.
+
+The agents cannot claim more confidence than the data allows (checked in code): e.g. one Hacker News story or one RSS article
+is always low, Hacker News and Y Combinator are never high, and `project_health` of a repository under 6 months old is at most 6.
+
+After the judge, the simple rules from before still apply (young repo, mentions). The Details tab shows each agent's
+scorecard, the anti-hype memo and the rules that were applied.
+
+Parallel requests hit your local Ollama: at most `RADAR_TECH_CONCURRENCY × RADAR_LANE_CONCURRENCY` at once (default 1 × 4).
+If the model runs out of memory, set `RADAR_LANE_CONCURRENCY=1` in `.env`. Ollama usually serves one request at a time on a
+CPU anyway, so the parallel agents queue up there: correct, but not faster.
+
+**Ollama is extremely slow (under 1 token/s)?** On hybrid Intel CPUs (performance + efficiency cores), especially inside Docker
+or WSL, llama.cpp's default of "all cores" can be ~100× slower than a smaller thread count. Measured on a Core Ultra 7 in
+Docker: 0.17 tokens/s with 16 threads, 17.8 tokens/s with 6. Set `OLLAMA_NUM_THREAD=6` (about your performance-core count)
+in `.env`; it is passed on every call, extraction and rating. Check the speed with `docker logs ollama --tail 20` (look for
+"tokens per second" in the `eval time` line).
 
 ## Prompts: one per source
 
@@ -45,7 +102,10 @@ Each source has its own extraction prompt in `prompts/`, written for how that so
 | `prompts/hackernews.md` | Hacker News batches | Titles only: "Show HN: X" → X; skip opinion and business stories |
 | `prompts/rss.md` | Blog/news batches | Skip vendor marketing names; releases count without version |
 | `prompts/_rules.md` | Added to every source prompt | What counts as a technology, output rules |
-| `prompts/classify.md` | Rating each technology | Rings, how to weigh each source's evidence, bbv context |
+| `prompts/rate_github.md`, `rate_ycombinator.md`, `rate_hackernews.md`, `rate_rss.md` | The four source agents | Scoring rubric with anchors for each source |
+| `prompts/antihype.md` | Anti-hype agent | Hunts for reasons to reject, writes the risk memo |
+| `prompts/judge.md` | Judge | Rings, bbv context, the decision matrix |
+| `prompts/classify.md` | Old single rating prompt | No longer used by a scan (kept for `test_ai.py`) |
 
 Batches never mix sources, so each batch gets its own prompt. Each source also sends the model only its useful
 fields (GitHub: language, stars, topics, created date; YC: batch, tags; HN: points, comments, link domain; RSS: site, summary).
@@ -64,10 +124,13 @@ to re-run quickly with a new prompt on the same data.
 | `services/pipeline.py` | Clean → extract technologies → merge and rank → rate → rules |
 | `prompts/*.md` | The LLM prompts (one per source + shared rules + rating) |
 | `services/ai_service.py` | Loads prompts, formats items per source, JSON schemas, Ollama client |
+| `services/radar_graph.py` | The rating graph: state, parallel source agents, anti-hype, judge, decision matrix |
+| `services/radar_lanes.py` | What each source agent sees: metrics computed in code, license risk, score schemas |
 | `services/radar_chart.py` | Draws the radar (SVG, no extra library) |
 | `services/storage.py` | Saves runs, compares with the previous run |
 | `services/export.py` | Markdown and CSV downloads |
 | `tests/test_offline.py` | End-to-end test with fake sources and a fake LLM |
+| `tests/test_graph.py` | Rating agents: facts, decision matrix, parallelism, errors (no Ollama needed) |
 
 ## Ideas for the hackathon day
 

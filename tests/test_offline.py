@@ -20,6 +20,7 @@ import config  # noqa: E402
 config.DATA_DIR = tempfile.mkdtemp()
 from services import export, pipeline, radar_chart, rss_service, storage  # noqa: E402
 from services import github_service, hn_service, yc_service  # noqa: E402
+from services.radar_lanes import RISK_SCORES  # noqa: E402
 
 pipeline.CACHE_DIR = os.path.join(config.DATA_DIR, "cache")
 
@@ -38,7 +39,13 @@ RSS = f"""<?xml version="1.0"?><rss version="2.0"><channel><title>InfoQ</title>
 ATOM = f"""<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Fowler</title>
 <entry><title type="html">Using the Model Context Protocol in enterprises</title>
 <link rel="alternate" href="https://martinfowler.com/articles/mcp.html"/><updated>{ago(3).isoformat()}</updated>
-<summary>How MCP connects agents to tools.</summary></entry></feed>"""
+<summary>How MCP connects agents to tools.</summary></entry>
+<entry><title>Blazor United unifies server and client rendering</title>
+<link rel="alternate" href="https://martinfowler.com/articles/blazor-united.html"/><updated>{ago(5).isoformat()}</updated>
+<summary>Blazor now renders on the server and the client.</summary></entry>
+<entry><title>Blazor WebAssembly gets ahead-of-time compilation</title>
+<link rel="alternate" href="https://martinfowler.com/articles/blazor-aot.html"/><updated>{ago(6).isoformat()}</updated>
+<summary>Blazor apps start faster with AOT.</summary></entry></feed>"""
 
 
 class Resp:
@@ -58,7 +65,8 @@ def fake_get(url, params=None, headers=None, timeout=None):
         return Resp({"items": [
             {"name": "ty", "full_name": "astral-sh/ty", "language": "Rust", "html_url": "https://github.com/astral-sh/ty",
              "description": "An extremely fast Python type checker", "stargazers_count": 4200,
-             "created_at": ago(40).isoformat(), "topics": ["python", "type-checker"]},
+             "created_at": ago(40).isoformat(), "topics": ["python", "type-checker"], "license": {"spdx_id": "MIT"},
+             "pushed_at": ago(1).isoformat(), "forks_count": 90, "open_issues_count": 120, "archived": False},
             {"name": "otel-thing", "full_name": "foo/otel-thing", "language": "Go", "html_url": "https://github.com/foo/otel-thing",
              "description": "OpenTelemetry collector plugin", "stargazers_count": 300, "created_at": ago(20).isoformat(), "topics": []},
         ]})
@@ -104,14 +112,42 @@ class FakeLLM:
             for name, quadrant, pattern in [("OpenTelemetry", "Tools", "opentelemetry"),
                                             ("MCP", "Techniques", "model context protocol"),
                                             ("ty", "Tools", "type checker"), ("Kubernetes", "Platforms", "kubernetes"),
-                                            ("AI", "Techniques", "")]:
+                                            ("Blazor", "Languages & Frameworks", "blazor"), ("AI", "Techniques", "")]:
                 ids = [int(line[1:line.index("]")]) for line in user.splitlines()[1:] if pattern in line.lower()]
                 if ids:
                     techs.append({"name": name, "quadrant": quadrant, "what": f"{name} is a thing", "items": ids})
             return {"technologies": techs}
-        ring = "Adopt" if "Technology: ty" in user or "Technology: OpenTelemetry" in user else "Hold" if "Kubernetes" in user else "Assess"
-        return {"quadrant": "Tools", "ring": ring, "summary": "s", "reason": "Because of <evidence>.",
-                "business_value": "IoT & medtech", "relevance": "HIGH", "confidence": "medium"}
+        raise AssertionError("rating no longer goes through chat_json: the agents use the chat model")
+
+
+class FakeChat:
+    """Stands in for ChatOllama on the rating agents: reads the technology from the prompt and answers per schema."""
+
+    def __init__(self):
+        self.asked = []   # (schema title, technology)
+
+    def with_structured_output(self, schema, method=None):
+        return FakeStructured(self, schema)
+
+
+class FakeStructured:
+    def __init__(self, chat, schema):
+        self.chat, self.schema = chat, schema
+
+    async def ainvoke(self, messages):
+        (_, system), (_, user) = messages
+        title, tech = self.schema["title"], user.splitlines()[0].replace("Technology: ", "")
+        self.chat.asked.append((title, tech))
+        if title.startswith("scorecard_"):
+            names = [n for n in self.schema["properties"] if n not in ("summary", "confidence")]
+            return {"summary": f"{title} says fine", "confidence": "medium",
+                    **{n: 2 if n in RISK_SCORES else 8 if n == "maturity" else 6 for n in names}}
+        if title == "risk_memo":
+            return {"memo": "Risk one. Risk two. Risk three."}   # the fatal-flaw boolean is computed by code
+        category = "ADOPT" if tech in ("ty", "OpenTelemetry", "MCP", "Blazor") else "HOLD" if tech == "Kubernetes" else "ASSESS"
+        assert "licensing_risk is above 7" in system, "the decision matrix must be written into the judge prompt"
+        return {"justification": "Because of <scores>.", "category": category, "confidence": "medium",
+                "relevance": "HIGH", "business_value": "IoT & medtech"}
 
 
 settings = {"area": "All", "sources": config.SOURCES, "days": 30, "max_signals": 40, "top_n": 10,
@@ -119,8 +155,9 @@ settings = {"area": "All", "sources": config.SOURCES, "days": 30, "max_signals":
 config.RSS_FEEDS[:] = ["https://feed.infoq.com/", "https://martinfowler.com/feed.atom", "https://broken.example/feed"]
 pipeline.RSS_FEEDS = config.RSS_FEEDS
 llm = FakeLLM()
+chat = FakeChat()
 msgs = []
-result = pipeline.run_scan(settings, llm, lambda m, f: msgs.append((round(f, 2), m)))
+result = pipeline.run_scan(settings, llm, lambda m, f: msgs.append((round(f, 2), m)), chat_model=chat)
 
 titles = [s["title"] for s in result["signals"]]
 print("SIGNALS:", *[f"  {s['n']:>2} [{s['source']}] {s['title']}" for s in result["signals"]], sep="\n")
@@ -135,8 +172,12 @@ techs = {t["name"]: t for t in result["technologies"]}
 print("TECHNOLOGIES:", *[f"  {t['name']}: {t['ring']} ({t['quadrant']}) mentions={t['mentions']} notes={t['rule_notes']}"
                          for t in result["technologies"]], sep="\n")
 assert "AI" not in techs, "generic word should be dropped"
-assert techs["ty"]["ring"] == "Assess" and techs["ty"]["llm_ring"] == "Adopt", "young repo rule"
-assert techs["OpenTelemetry"]["ring"] == "Trial", "Adopt needs 3+ mentions"
+assert techs["ty"]["ring"] == "Assess" and any("young" in n or "days old" in n for n in techs["ty"]["rule_notes"]), "young repo rule"
+assert techs["ty"]["llm_ring"] == "Trial" and any("no reliable RSS data" in n for n in techs["ty"]["rule_notes"]), "matrix: Adopt needs maturity"
+assert techs["OpenTelemetry"]["ring"] == "Trial" and techs["OpenTelemetry"]["llm_ring"] == "Trial", "no RSS data -> max Trial"
+assert techs["MCP"]["ring"] == "Trial" and techs["MCP"]["llm_ring"] == "Trial", "a single RSS article is low confidence -> max Trial"
+assert techs["Blazor"]["ring"] == "Trial" and techs["Blazor"]["llm_ring"] == "Adopt", "Adopt needs 3+ mentions"
+assert any("3+ mentions" in n for n in techs["Blazor"]["rule_notes"])
 assert techs["Kubernetes"]["is_seed"] and techs["Kubernetes"]["ring"] == "Adopt", "seed ring must win over the model"
 assert techs["Kubernetes"]["mentions"] == 1 and any("Kept bbv" in n for n in techs["Kubernetes"]["rule_notes"])
 assert techs["TypeScript"]["is_seed"] and techs["TypeScript"]["mentions"] == 0, "unmatched seeds still added"
@@ -151,12 +192,27 @@ gh_batch = next(u for h, _, u in llm.batches if "GitHub" in h)
 assert "language: Rust" in gh_batch and "stars" in gh_batch, gh_batch
 hn_batch = next(u for h, _, u in llm.batches if "Hacker News" in h)
 assert "points" in hn_batch and "link: example.com" in hn_batch, hn_batch
-assert set(result["settings"]["prompts"]) == {"github", "ycombinator", "hackernews", "rss", "_rules", "classify"}
+assert set(result["settings"]["prompts"]) == {"github", "ycombinator", "hackernews", "rss", "_rules", "classify",
+                                              "rate_github", "rate_ycombinator", "rate_hackernews", "rate_rss", "antihype", "judge"}
+
+# rating agents: only sources with data run, then one anti-hype and one judge call per technology
+rated = [t for t in result["technologies"] if "scorecards" in t]   # rated by the agents (a seed that matched is rated too)
+assert len(rated) == 5 and all(t["scorecards"] and t["risk_memo"] for t in rated), "every rated technology carries its scorecards and memo"
+assert not any("scorecards" in t for t in result["technologies"] if t["is_seed"] and t["mentions"] == 0), "unmatched seeds are not rated"
+assert [c["lane"] for c in techs["ty"]["scorecards"]] == ["github"], techs["ty"]["scorecards"]
+assert techs["ty"]["scorecards"][0]["scores"]["licensing_risk"] == 1, "MIT license -> computed licensing_risk 1"
+assert techs["ty"]["evidence"][0]["meta"]["stars"] == 4200, "evidence keeps meta for the agents"
+assert sorted(c["lane"] for c in techs["OpenTelemetry"]["scorecards"]) == ["github", "hackernews"], "its RSS copy was a duplicate"
+assert sorted(c["lane"] for c in techs["MCP"]["scorecards"]) == ["hackernews", "rss"]
+assert [c["lane"] for c in techs["Blazor"]["scorecards"]] == ["rss"] and techs["Blazor"]["scorecards"][0]["confidence"] == "medium"
+assert {c["lane"]: c["confidence"] for c in techs["MCP"]["scorecards"]} == {"hackernews": "low", "rss": "low"}, "one story / one article"
+assert len(chat.asked) == sum(len(t["scorecards"]) + 2 for t in rated), chat.asked
+print("AGENT CALLS:", len(chat.asked), "| extraction calls:", llm.calls)
 
 # source cache: a second scan with the network down reuses the fetched data
 for module in (github_service, yc_service, hn_service, rss_service):
     module.requests.get = lambda *a, **k: (_ for _ in ()).throw(Exception("offline"))
-again = pipeline.run_scan(settings, FakeLLM())
+again = pipeline.run_scan(settings, FakeLLM(), chat_model=FakeChat())
 assert len(again["signals"]) == len(result["signals"]) and not again["errors"][1:], again["errors"]
 for module in (github_service, yc_service, hn_service, rss_service):
     module.requests.get = fake_get

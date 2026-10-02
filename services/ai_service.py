@@ -8,12 +8,15 @@ import os
 
 import ollama
 
-from config import BBV_CONTEXT, QUADRANTS, RINGS
+from config import BBV_CONTEXT, OLLAMA_NUM_THREAD, QUADRANTS, RINGS
 
 PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
 
 # One extraction prompt per source (prompts/<file>.md) + shared rules (prompts/_rules.md).
 SOURCE_PROMPTS = {"GitHub": "github", "Y Combinator": "ycombinator", "Hacker News": "hackernews", "RSS feeds": "rss"}
+
+# Rating prompts of the multi-agent graph (services/radar_graph.py): one agent per source, a skeptic and a judge.
+RATING_PROMPTS = ["rate_github", "rate_ycombinator", "rate_hackernews", "rate_rss", "antihype", "judge"]
 
 
 def prompt_path(name):
@@ -33,7 +36,7 @@ def save_prompt(name, text):
 
 def prompt_versions():
     """Short fingerprint of every prompt, stored with each run so runs can be compared."""
-    names = list(SOURCE_PROMPTS.values()) + ["_rules", "classify"]
+    names = list(SOURCE_PROMPTS.values()) + ["_rules", "classify"] + RATING_PROMPTS
     return {n: hashlib.md5(load_prompt(n).encode()).hexdigest()[:8] for n in names}
 
 
@@ -123,11 +126,14 @@ class LLM:
         kwargs = {}
         if any(x in self.model for x in ("qwen3", "deepseek-r1", "gpt-oss")):
             kwargs["think"] = False  # thinking is very slow on CPU
+        options = {"temperature": 0, "num_ctx": 8192}
+        if OLLAMA_NUM_THREAD:
+            options["num_thread"] = OLLAMA_NUM_THREAD  # see config.py
         response = self.client.chat(
             model=self.model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             format=schema,
-            options={"temperature": 0, "num_ctx": 8192},
+            options=options,
             **kwargs,
         )
         message = response["message"] if isinstance(response, dict) else response.message

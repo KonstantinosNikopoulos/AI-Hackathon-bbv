@@ -37,14 +37,18 @@ def swatch(quadrant):
 
 PROMPT_LABELS = {
     "GitHub": "github", "Y Combinator": "ycombinator", "Hacker News": "hackernews", "RSS feeds": "rss",
-    "Shared rules (added to every source prompt)": "_rules", "Rating prompt (one technology, all sources)": "classify",
+    "Shared rules (added to every source prompt)": "_rules",
+    "Rating agent: GitHub": "rate_github", "Rating agent: Y Combinator": "rate_ycombinator",
+    "Rating agent: Hacker News": "rate_hackernews", "Rating agent: RSS feeds": "rate_rss",
+    "Anti-hype agent (looks for reasons to reject)": "antihype", "Judge (decision matrix, picks the ring)": "judge",
+    "Classic rating prompt (single prompt, not used by the agents)": "classify",
 }
 
 
 def prompt_editor(signals):
     st.write("Each source has its own **extraction prompt**, tuned to how that source works. The shared rules are "
-             "added to every source prompt. The **rating prompt** is shared, because one technology can come from "
-             "several sources. Saved changes apply to the next scan.")
+             "added to every source prompt. Rating is done by **agents**: one per source scores the evidence, an "
+             "anti-hype agent looks for reasons to reject, and a judge picks the ring. Saved changes apply to the next scan.")
     choice = st.selectbox("Prompt", list(PROMPT_LABELS), key="prompt_choice")
     name = PROMPT_LABELS[choice]
     text = st.text_area("Prompt text", ai_service.load_prompt(name), height=360, key=f"prompt_text_{name}")
@@ -91,8 +95,9 @@ with st.sidebar:
     top_n = st.slider("Technologies to rate", 5, 25, DEFAULT_TOP_N)
     use_cache = st.checkbox("Reuse sources fetched in the last hour", value=True,
                             help="Saves time and the GitHub rate limit while you tune prompts. Untick for fresh data.")
-    calls = math.ceil(max_signals / BATCH_SIZE) + top_n
-    st.caption(f"≈ {calls} LLM calls per scan. On a CPU expect about 10–30 s each.")
+    calls = math.ceil(max_signals / BATCH_SIZE) + top_n * 6   # per technology: up to 4 source agents + anti-hype + judge
+    st.caption(f"Up to ≈ {calls} LLM calls per scan (a source agent only runs when its source has data). "
+               "On a CPU expect about 10–30 s each.")
     scan = st.button("🔍 Scan & analyze", type="primary", disabled=not sources)
 
     st.divider()
@@ -140,7 +145,8 @@ if not result:
 2. **Clean**: drop noise (funding, hiring…) and duplicates, mix sources fairly.
 3. **Extract**: the LLM names the technologies the signals are about.
 4. **Merge and rank**: the same technology from several sources counts more.
-5. **Rate**: the LLM proposes a ring with a reason; simple rules check it (e.g. a 3-month-old repo can't be *Adopt*).
+5. **Rate**: one agent per source scores the evidence in parallel, an anti-hype agent looks for reasons to reject, and a judge
+   proposes a ring using a decision matrix; simple rules check it (e.g. a 3-month-old repo can't be *Adopt*).
 """)
     with st.expander("🧠 Prompts"):
         prompt_editor([])
@@ -298,6 +304,13 @@ with tab_details:
                          f"{len(t['sources'])} source(s)")
                 for note in t.get("rule_notes", []):
                     st.caption(f"Rule applied: {note}")
+                if t.get("scorecards"):
+                    st.write("**Agent scorecards** (0–10; for friction, hype and licensing risk, higher is worse)")
+                    st.dataframe(pd.DataFrame([{
+                        "Agent": c["lane"], "Scores": " · ".join(f"{k} {v}" for k, v in c["scores"].items() if v is not None) or "failed",
+                        "Confidence": c["confidence"], "Summary": c["summary"]} for c in t["scorecards"]]), hide_index=True)
+                if t.get("risk_memo"):
+                    st.write(f"**Anti-hype review{' ⚠️ fatal flaw found' if t.get('fatal_flaws_found') else ''}:** {t['risk_memo']}")
                 if t["evidence"]:
                     st.write("**Evidence**")
                     for e in t["evidence"]:
