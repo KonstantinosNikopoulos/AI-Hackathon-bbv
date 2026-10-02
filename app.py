@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from config import (AREAS, BATCH_SIZE, DEFAULT_DAYS, DEFAULT_MAX_SIGNALS, DEFAULT_MODEL, DEFAULT_OLLAMA_HOST,
-                    DEFAULT_TOP_N, QUADRANTS, REGISTRY_SOURCE, RINGS, SOURCES, SUGGESTED_MODELS)
+                    DEFAULT_TOP_N, MAX_DAYS, QUADRANTS, REGISTRY_SOURCE, RINGS, SOURCES, SUGGESTED_MODELS)
 from services import export, pipeline, storage
 from services import ai_service
 from services.ai_service import LLM, SOURCE_PROMPTS
@@ -93,7 +93,12 @@ with st.sidebar:
     sources = st.multiselect("Sources", SOURCES, default=SOURCES,
                              help=f"{REGISTRY_SOURCE} collect no signals: they look up the technologies the other sources "
                                   "found in npm, PyPI, Maven Central and Docker Hub, and rate their download numbers.")
-    days = st.slider("Look back (days)", 7, 90, DEFAULT_DAYS)
+    days = int(st.number_input("Look back (days)", min_value=1, value=DEFAULT_DAYS, step=1,
+                               help="Any number of days, for example 365 or 3650 to include older projects. GitHub: repositories "
+                                    "created in that window, most starred first. Hacker News: the most popular stories of the "
+                                    "window. RSS feeds only list their newest items, so a long look-back adds little there."))
+    if days > MAX_DAYS:
+        st.caption(f"Longer than {MAX_DAYS:,} days is treated as {MAX_DAYS:,} days (100 years).")
     max_signals = st.slider("Signals sent to the LLM", 8, 80, DEFAULT_MAX_SIGNALS, step=8)
     top_n = st.slider("Technologies to rate", 5, 25, DEFAULT_TOP_N)
     use_cache = st.checkbox("Reuse sources fetched in the last hour", value=True,

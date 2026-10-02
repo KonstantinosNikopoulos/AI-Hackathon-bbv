@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from config import AREAS
+from config import AREAS, clamp_days
 
 
 def _clean(text):
@@ -66,7 +66,7 @@ def parse_feed(xml_text):
 
 
 def get_rss_items(feeds, per_feed=5, technology_area="All", days=30, errors=None):
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=clamp_days(days))
     keywords = AREAS.get(technology_area, AREAS["All"])["keywords"]
     items = []
     for url in feeds:

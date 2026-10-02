@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import requests
 
-from config import AREAS
+from config import AREAS, clamp_days
 
 GITHUB_SEARCH_URL = "https://api.github.com/search/repositories"
 
@@ -15,7 +15,7 @@ def get_trending_repositories(limit=5, technology_area="AI / LLM", days=90, min_
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    since_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    since_date = (datetime.now() - timedelta(days=clamp_days(days))).strftime("%Y-%m-%d")
     terms = AREAS.get(technology_area, AREAS["All"])["github"]
     query = f"{terms} created:>{since_date} stars:>{min_stars}".strip()
 

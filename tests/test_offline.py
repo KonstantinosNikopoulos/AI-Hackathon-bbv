@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import types
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -284,6 +285,34 @@ for module in (github_service, yc_service, hn_service, rss_service, registry_ser
     module.requests.get = fake_get
 assert {t["quadrant"] for t in result["technologies"]} == set(config.QUADRANTS), "all quadrants filled"
 assert msgs[-1][0] == 1.0
+
+# look-back: any whole number of days works, however large (the UI stopped at 90; dates overflow beyond ~740000 days)
+assert [config.clamp_days(d) for d in (0, -5, 1, "45", 3650, 36500, 10**12, 7.9)] == [1, 1, 1, 45, 3650, 36500, 36500, 7]
+seen, real_get = [], github_service.requests.get   # the one requests module all services share
+
+
+def recording_get(url, params=None, headers=None, timeout=None):
+    seen.append((url, params))
+    return fake_get(url, params, headers, timeout)
+
+
+github_service.requests.get = recording_get
+for days in (1, 5, 89, 91, 3650, 10**6, 10**12):
+    seen.clear()
+    github_service.get_trending_repositories(limit=3, technology_area="All", days=days)
+    hn_service.get_hn_stories(limit=3, days=days)
+    old_enough = len(rss_service.get_rss_items(["https://feed.infoq.com/"], days=days))
+    (github_url, github_params), (hn_url, hn_params) = seen[0], seen[1]
+    since = datetime.strptime(re.search(r"created:>([\d-]+)", github_params["q"]).group(1), "%Y-%m-%d")
+    assert abs((datetime.now() - since).days - config.clamp_days(days)) <= 1, (days, github_params["q"])
+    assert hn_url == "https://hn.algolia.com/api/v1/search", "points-ranked: the most popular stories of the WHOLE window"
+    since_hn = int(re.search(r"created_at_i>(-?\d+)", hn_params["numericFilters"]).group(1))
+    assert abs(time.time() - since_hn - config.clamp_days(days) * 86400) < 5, (days, hn_params)
+    assert old_enough == sum(1 for age in (2, 1, 4, 90) if age < days), (days, old_enough)   # ages of the RSS fixture's articles
+github_service.requests.get = real_get
+huge = pipeline.run_scan(dict(settings, days=10**9), FakeLLM(), chat_model=FakeChat())   # a whole scan with an absurd look-back
+assert huge["settings"]["days"] == 10**9 and len(huge["signals"]) >= len(result["signals"]) and huge["technologies"]
+print("OK look-back: 1 to 10^12 days, GitHub / Hacker News / RSS windows, points-ranked Hacker News search")
 
 # YC sorting by batch
 yc = yc_service.get_yc_companies(limit=1, technology_area="AI / LLM")

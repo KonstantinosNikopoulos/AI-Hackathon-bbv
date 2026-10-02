@@ -34,6 +34,11 @@ streamlit run app.py
 Ollama must be running (`docker compose up -d` in `C:\hackathon`) with the model you pick in the sidebar,
 for example `docker exec -it ollama ollama pull llama3.2:3b` or `... pull qwen3:4b`.
 
+**Look back** is any number of days (1 to 36,500; type 365 or 3650 to include older projects). GitHub lists repositories created
+in that window, most starred first; Hacker News lists the most popular stories of the window (Algolia's points-ranked
+search: the newest-first search used before returned only the last few days whatever the look-back); RSS feeds only list
+their newest items, so a long look-back adds little there.
+
 A scan makes up to `signals / 8 + 7 × technologies` LLM calls (default up to about 89; fewer in practice, because a source
 agent only runs when its source has data). Start with fewer signals and technologies for a quick test (e.g. 16 and 5).
 

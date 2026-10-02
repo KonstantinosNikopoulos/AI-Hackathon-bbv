@@ -14,6 +14,7 @@ DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 SUGGESTED_MODELS = ["llama3.2:3b", "qwen3:4b", "qwen3:8b", "gemma3:4b"]
 
 DEFAULT_DAYS = 30          # only signals from the last N days (GitHub: repos created in that window)
+MAX_DAYS = 36500           # the look-back is any whole number of days; 100 years is the limit (keeps date maths from overflowing)
 DEFAULT_MAX_SIGNALS = 40   # signals sent to the LLM for extraction
 DEFAULT_TOP_N = 12         # technologies that get a ring
 BATCH_SIZE = 8             # signals per extraction call
@@ -97,3 +98,8 @@ SEED_RADAR = [
 ]
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "runs")
+
+
+def clamp_days(days):
+    """The look-back every source uses: any whole number of days. Less than 1 means 1, more than MAX_DAYS means MAX_DAYS."""
+    return max(1, min(int(days), MAX_DAYS))
