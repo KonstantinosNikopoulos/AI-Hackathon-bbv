@@ -96,12 +96,17 @@ with st.sidebar:
                                     "window. RSS feeds only list their newest items, so a long look-back adds little there."))
     if days > MAX_DAYS:
         st.caption(f"Longer than {MAX_DAYS:,} days is treated as {MAX_DAYS:,} days (100 years).")
-    max_signals = st.slider("Signals sent to the LLM", 8, 80, DEFAULT_MAX_SIGNALS, step=8)
-    top_n = st.slider("Technologies to rate", 5, 25, DEFAULT_TOP_N)
+    max_signals = int(st.number_input("Signals sent to the LLM", min_value=8, value=DEFAULT_MAX_SIGNALS, step=8,
+                                      help="No upper limit: every source fetches enough for this many signals (GitHub and Hacker News "
+                                           "give at most 100 each). More signals find more technologies and cost more LLM calls."))
+    rate_all = st.checkbox("Rate every technology found", value=True,
+                           help="Untick to rate only the most mentioned ones.")
+    top_n = None if rate_all else int(st.number_input("Technologies to rate (most mentioned first)", min_value=1, value=DEFAULT_TOP_N, step=1))
     use_cache = st.checkbox("Reuse sources fetched in the last hour", value=True,
                             help="Saves time and the GitHub rate limit while you tune prompts. Untick for fresh data.")
-    calls = math.ceil(max_signals / BATCH_SIZE) + top_n   # extraction batches + one rating call per technology
-    st.caption(f"≈ {calls} LLM calls per scan. On a CPU expect about 10–30 s each.")
+    extraction = math.ceil(max_signals / BATCH_SIZE)   # one rating call per technology on top of the extraction batches
+    st.caption(f"≈ {extraction} extraction calls + one rating call per technology"
+               f"{'' if top_n is None else f' (at most {top_n})'}. On a CPU expect about 10–30 s each.")
     # Package registries only look up what the other sources found, so at least one of those is needed.
     scan = st.button("🔍 Scan & analyze", type="primary", disabled=not any(s != REGISTRY_SOURCE for s in sources))
 
@@ -152,7 +157,7 @@ if not result:
 4. **Merge and rank**: the same technology from several sources counts more.
 5. **Rate**: one prompt per technology reads all its evidence (including real npm, PyPI, Maven Central and Docker Hub
    download numbers) and proposes a ring; rules in code check the facts (an archived repo or an unusable license is *Hold*,
-   a project under 6 months old is at most *Assess*, *Adopt* needs years of use at scale).
+   a project under 6 months old is at most *Assess*; nothing else stops a well-known technology from being *Adopt*).
 """)
     with st.expander("🧠 Prompts"):
         prompt_editor([])

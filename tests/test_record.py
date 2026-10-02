@@ -109,13 +109,10 @@ print("OK standing: new < emerging < established < widespread, tied to the techn
 
 # ------------------------------------------------------------------ guards: only facts
 assert guard("Adopt", widespread) == ("Adopt", []) and guard("Trial", widespread) == ("Trial", []) and guard("Hold", widespread) == ("Hold", [])
-ring, notes = guard("Adopt", established)
-assert ring == "Trial" and notes == ["Adopt → Trial: ADOPT needs years of use at scale, here the standing is "
-                                     "established (years old, with real traction, but not used at scale)"], notes
-assert guard("Trial", established) == ("Trial", []) and guard("Assess", established) == ("Assess", []), "a guard never moves a ring UP"
-assert guard("Adopt", record(repo(created=years_ago(2), stars=50_000)))[0] == "Trial", "emerging: at most Trial"
-assert guard("Trial", record(repo(created=years_ago(2), stars=50_000)))[0] == "Trial"
-assert guard("Adopt", nothing)[0] == "Trial" and guard("Trial", nothing)[0] == "Trial", "unknown age: at most Trial"
+# nothing about age or size stops an ADOPT: the most known and used technologies must be able to be adopted, whatever a scan can see
+for rec in (established, record(repo(created=years_ago(2), stars=50_000)), record(repo(created=years_ago(10), stars=200)), nothing):
+    for ring in ("Adopt", "Trial", "Assess", "Hold"):
+        assert guard(ring, rec) == (ring, []), (rec["standing"], ring)
 for ring in ("Adopt", "Trial"):
     out, notes = guard(ring, new)
     assert out == "Assess" and notes == [f"{ring} → Assess: first seen only 40 days ago, nothing is proven yet"], notes
@@ -134,7 +131,7 @@ only_old_repo_archived = record(repo(0, created=years_ago(12), stars=20, archive
 assert guard("Adopt", only_old_repo_archived)[0] == "Adopt", "an archived side repository does not archive the technology"
 # a model's opinion is never a rule: only facts move a ring (the first rules vetoed Linux on the strength of headlines)
 assert not any(hasattr(rr, name) for name in ("matrix_rules", "fatal_flaws", "ADOPT_MIN_MATURITY", "ASSESS_CAP_IF_ANY_RISK_AT_LEAST"))
-print("OK guards: archived, license and too new -> a ring cap or Hold; ADOPT needs years at scale; nothing else is a rule")
+print("OK guards: archived and license -> Hold, too new -> at most Assess; ADOPT is never capped; nothing else is a rule")
 
 # pipeline.apply_rules is those guards plus the quadrant
 c = candidate(repo(created=days_ago(40), stars=5000))

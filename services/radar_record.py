@@ -1,13 +1,15 @@
 """The rules of the radar, in code: facts about ONE technology and the few guards that follow from them. Pure Python, no LLM.
 
-The single prompt (prompts/classify.md) proposes a ring from the evidence. Then apply_guards checks the FACTS the model cannot be trusted
-with: an archived repository, a license nobody can use, a technology too new to be proven, ADOPT without years of use at scale. What a
-model only guesses from headlines (friction, hype, maturity) is NOT a rule: a first version made such guesses into vetoes and they
-rejected Linux, PostgreSQL and Kubernetes because their Hacker News titles sounded critical.
+The single prompt (prompts/classify.md) proposes a ring from the evidence. Then apply_guards checks only FACTS: an archived repository
+or a license nobody can use is Hold, a technology first seen less than 6 months ago is at most Assess. Nothing stops ADOPT: the most
+known and used technologies must be able to be adopted, and a scan often cannot see their age or size. What a model only guesses from
+headlines (friction, hype, maturity) is not a rule either: a first version made such guesses into vetoes and they rejected Linux,
+PostgreSQL and Kubernetes because their Hacker News titles sounded critical. A later rule "ADOPT needs years of use at scale" raised the
+exact accuracy on the gold list from 79% to 90% but capped famous technologies whose age the scan could not see (Git, Spring), so it was
+removed.
 
-build_record measures the facts and derives a STANDING: new < emerging < established < widespread (or unknown). The numbers are round
-figures chosen from the meaning of the rings, not fitted to eval/gold_radar.json; the ADOPT scale (ten times the traction that makes a
-technology established) was added after the first results on it, and eval/heldout_radar.json is the check."""
+build_record measures the facts and derives a STANDING: new < emerging < established < widespread (or unknown). Only "new" changes a ring;
+the rest is shown in the Details tab and used by eval/run_gold.py to report accuracy per standing."""
 from datetime import date, datetime
 
 from config import REGISTRY_SOURCE
@@ -159,6 +161,4 @@ def apply_guards(ring, record):
         move("Hold", f"the repository {own['repo']} is archived")
     elif record["standing"] == "new" and order.index(ring) < order.index("Assess"):
         move("Assess", f"first seen only {record['age_days']} days ago, nothing is proven yet")
-    elif ring == "Adopt" and record["standing"] != "widespread":
-        move("Trial", "ADOPT needs years of use at scale, here the standing is " + LONG_FORM[record["standing"]])
     return ring, notes

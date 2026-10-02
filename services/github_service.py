@@ -21,7 +21,7 @@ def get_trending_repositories(limit=5, technology_area="AI / LLM", days=90, min_
 
     response = requests.get(
         GITHUB_SEARCH_URL,
-        params={"q": query, "sort": "stars", "order": "desc", "per_page": limit},
+        params={"q": query, "sort": "stars", "order": "desc", "per_page": min(limit, 100)},   # 100 is the most GitHub gives per page
         headers=headers,
         timeout=15,
     )

@@ -1,5 +1,6 @@
 """The scan: collect signals -> clean -> LLM extracts technologies -> merge and rank -> LLM proposes rings."""
 import json
+import math
 import os
 import re
 import time
@@ -38,27 +39,29 @@ def collect_signals(settings, progress=lambda msg, frac: None):
     """Fetch every enabled source. A failing source is reported, not fatal."""
     area, days, errors, signals = settings["area"], settings["days"], [], []
     sources = settings["sources"]
+    # No fixed cap: each source fetches enough for the number of signals asked for (never less than before: 15, 10, 15 and 4 per feed).
+    share = math.ceil(settings["max_signals"] / max(1, sum(1 for s in SOURCE_ORDER if s in sources)))
     steps = [
-        ("GitHub", lambda: github_service.get_trending_repositories(limit=15, technology_area=area, days=days)),
-        ("Y Combinator", lambda: yc_service.get_yc_companies(limit=10, technology_area=area)),
-        ("Hacker News", lambda: hn_service.get_hn_stories(limit=15, technology_area=area, days=days)),
-        ("RSS feeds", lambda: rss_service.get_rss_items(RSS_FEEDS, per_feed=4, technology_area=area,
-                                                        days=days, errors=errors)),
+        ("GitHub", lambda: github_service.get_trending_repositories(limit=max(15, share), technology_area=area, days=days)),
+        ("Y Combinator", lambda: yc_service.get_yc_companies(limit=max(10, share), technology_area=area)),
+        ("Hacker News", lambda: hn_service.get_hn_stories(limit=max(15, share), technology_area=area, days=days)),
+        ("RSS feeds", lambda: rss_service.get_rss_items(RSS_FEEDS, per_feed=max(4, math.ceil(share / max(1, len(RSS_FEEDS)))),
+                                                        technology_area=area, days=days, errors=errors)),
     ]
     enabled = [s for s in steps if s[0] in sources]
     for i, (name, fetch) in enumerate(enabled):
         progress(f"Collecting from {name}...", i / max(len(enabled), 1))
-        cached = _cache_get(name, settings) if settings.get("use_cache", True) else None
+        cached = _cache_get(name, settings, share=share) if settings.get("use_cache", True) else None
         if cached is not None:
             signals.extend(cached)
             continue
         try:
             items = fetch()
             signals.extend(items)
-            _cache_put(name, settings, items)
+            _cache_put(name, settings, items, share=share)
         except Exception as error:
             errors.append(f"{name}: {error}")
-            stale = _cache_get(name, settings, max_age=7 * 86400)   # better old data than none
+            stale = _cache_get(name, settings, max_age=7 * 86400, share=share)   # better old data than none
             if stale:
                 signals.extend(stale)
                 errors.append(f"{name}: used cached data from an earlier fetch")
@@ -69,22 +72,22 @@ CACHE_DIR = os.path.join(os.path.dirname(DATA_DIR), "cache")
 CACHE_TTL = 3600  # seconds: re-running a scan within an hour reuses the fetched sources (saves the GitHub rate limit)
 
 
-def _cache_file(name, settings):
-    key = re.sub(r"[^a-z0-9]+", "-", f"{name}-{settings['area']}-{settings['days']}".lower())
+def _cache_file(name, settings, share=None):
+    key = re.sub(r"[^a-z0-9]+", "-", f"{name}-{settings['area']}-{settings['days']}{'' if share is None else f'-{share}'}".lower())
     return os.path.join(CACHE_DIR, key + ".json")
 
 
-def _cache_get(name, settings, max_age=CACHE_TTL):
-    path = _cache_file(name, settings)
+def _cache_get(name, settings, max_age=CACHE_TTL, share=None):
+    path = _cache_file(name, settings, share)
     if not os.path.exists(path) or time.time() - os.path.getmtime(path) > max_age:
         return None
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
-def _cache_put(name, settings, items):
+def _cache_put(name, settings, items, share=None):
     os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(_cache_file(name, settings), "w", encoding="utf-8") as f:
+    with open(_cache_file(name, settings, share), "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False)
 
 
@@ -129,8 +132,9 @@ def trim_evidence(evidence):
     return kept
 
 
-def merge_candidates(signals, extractions, top_n):
-    """extractions: list of (batch_signals, technologies). Same technology across batches is merged."""
+def merge_candidates(signals, extractions, top_n=None):
+    """extractions: list of (batch_signals, technologies). Same technology across batches is merged.
+    top_n: keep the most mentioned this many; None keeps every technology found."""
     by_key = {}
     for batch, techs in extractions:
         for t in techs or []:
@@ -235,7 +239,7 @@ def run_scan(settings, llm, progress=lambda msg, frac: None):
         except Exception as error:
             errors.append(f"Extraction {source} batch {i + 1}: {error}")
 
-    candidates = merge_candidates(signals, extractions, settings["top_n"])
+    candidates = merge_candidates(signals, extractions, settings.get("top_n"))
     if REGISTRY_SOURCE in settings["sources"]:   # the fifth source needs the technologies, so it runs after the merge
         errors += attach_registry_evidence(candidates, settings, lambda m, f: progress(m, 0.6 + 0.05 * f))
 

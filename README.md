@@ -9,7 +9,7 @@ Improved version of the original app in `C:\hackathon\tech-radar-ai` (that folde
 | Sources | GitHub, Y Combinator (first 5 matches) | GitHub, Y Combinator (newest batches first), Hacker News, 12 RSS feeds |
 | What gets rated | Each repo/startup | **Technologies** found across all signals, merged and ranked by mentions |
 | LLM answer | Free JSON, unknown rings disappear | JSON schema with fixed rings and quadrants, temperature 0 |
-| Rules | none | Facts only: archived repository or unusable license → Hold; younger than 6 months → max Assess; Adopt needs years of use at scale (see Rating) |
+| Rules | none | Facts only: archived repository or unusable license → Hold; younger than 6 months → max Assess. Nothing stops a well-known technology from being Adopt (see Rating) |
 | bbv context | generic "consulting company" | bbv services and industries in the prompt (edit in `config.py`) |
 | UI | Four lists | Round radar, KPI row, filters, Insights charts, table, details, signals, export |
 | Prompts | One prompt for everything | One extraction prompt per source, editable in the app |
@@ -49,16 +49,15 @@ line from GitHub, Y Combinator, Hacker News, the RSS feeds and the package regis
 value for bbv and a relevance. Then **rules in code** (`services/radar_record.py`, applied by `pipeline.apply_rules`) check the
 facts a model cannot be trusted with, and every change is shown in the Details tab as a "Rule applied" note.
 
-**The rules** (the only ones):
+**The rules** (the only ones; none of them can stop a well-known technology from being Adopt):
 
 - `licensing_risk` above 7 (AGPL, SSPL...) on its own repository → **Hold**
 - its own repository is **archived** → **Hold**
 - first seen less than 6 months ago (its main repository or a verified package) → at most **Assess**
-- **Adopt** needs years of use at scale (standing "widespread", below), otherwise at most **Trial**
 
-**Standing** is measured, never guessed by the model: how old the technology is (from its biggest own repository and its verified
-packages; stories and articles can only prove that it is *old*, never that it is new, because a scan only sees recent items) and how
-much it is used. **new** (under 6 months) · **emerging** (under 3 years, or older with no traction) · **established** (3+ years, and a
+**Standing** is measured, never guessed by the model, and only **new** changes a ring; the rest is shown in the Details tab and used by
+the test harness. It says how old the technology is (from its biggest own repository and its verified packages; stories and articles
+can only prove that it is *old*, never that it is new, because a scan only sees recent items) and how much it is used. **new** (under 6 months) · **emerging** (under 3 years, or older with no traction) · **established** (3+ years, and a
 repository with 1,000+ stars, a package with 100,000+ downloads a month, an image with 10M+ pulls or 1,000+ dependents; with no repository
 at all, 3 or more stories or articles about it) ·
 **widespread** (established, and ten times that: 10,000+ stars, 1M+ downloads a month, 100M+ pulls, 10,000+ dependents) · **unknown**
@@ -69,6 +68,12 @@ mentions. A first version made those vetoes (five source agents, an anti-hype ag
 `eval/gold_radar.json` it scored 48% against 83% for the single prompt, with 0 of 9 Adopt right: headlines made Linux, PostgreSQL
 and Kubernetes look "frictioned". Splitting the prompt into smaller ones lost accuracy every time it was measured (see "Is the model
 right?" below), so the scan went back to one prompt. That code is in the git history (commit `55b63cf`).
+
+**Why there is no "Adopt needs scale" rule.** One was tried ("Adopt only for a technology 3+ years old with 10,000+ stars, 1M+ downloads a
+month, 100M+ pulls or 10,000+ dependents, else Trial"). On the gold list it raised the exact accuracy from 79% to 90%, because it
+caught CNCF *incubating* projects (KubeVirt, Strimzi, Longhorn, OpenFeature) that the model called Adopt. But a scan often cannot see a
+technology's age or size, so it also capped famous technologies such as Git and Spring at Trial, and a small but ubiquitous library
+with few stars would be capped too. The goal is that the most known and used technologies are rated Adopt, so the rule was removed.
 
 ### Package registries (fifth source)
 
@@ -121,22 +126,27 @@ Helm 2, CentOS Linux, PHP 5 and Apache Struts 1 = Hold). The rules were frozen b
 
 | How the ring is decided | gold, 29 (designed on) | held-out, 43 (checked on) |
 | --- | --- | --- |
-| **The single prompt, with the first rules** (mentions, RSS maturity) | 24/29 = 83% | 24/43 = 56% |
-| **The single prompt, with the rules in code (what the app does)** | **26/29 = 90%** | **34/43 = 79%** |
+| The single prompt, with the first rules (mentions, RSS maturity) | 24/29 = 83% | 24/43 = 56% |
+| **The single prompt + the facts-only rules (what the app does)** | **23/29 = 79%** | **32/43 = 74%** |
+| The single prompt alone, no rules at all | 23/29 = 79% | 27/43 = 63% |
+| The same + a rule "Adopt needs scale" (removed, see above) | 26/29 = 90% | 34/43 = 79% |
 | The single prompt plus the facts written into the prompt | 25/29 = 86% | not run |
 | Three small questions (alive? used? mature?) and a table | 22/29 = 76% | not run |
 | Five source agents + anti-hype + judge, new judge | 18/29 = 62% | not run |
 | Five source agents + anti-hype + judge, first rules | 14/29 = 48% | not run |
 
+**Adopt, the ring that matters most: every technology whose gold ring is Adopt is found (9 of 9 on the gold list, 14 of 14 on the
+held-out list).** The misses are on the middle of the ladder: the model calls CNCF *incubating* projects (gold Trial) Adopt or Assess,
+0 of 6 and 0 of 8 right, because incubating against graduated is a committee's decision that a repository does not show. Wrongly
+Adopt: 5 of 29 and 5 of 43. The facts-only rules add 11 points on the held-out list (Hold 6/13 → 11/13: archived repositories) and
+nothing on the gold list.
+
 Reading it: **more pieces, less accuracy.** The single prompt sees all the evidence at once and can use what the model knows (that
 Flash and Python 2 are retired); an agent that sees one source cannot, and a small model believes the confident digests it is
-handed. The rules in code add 7 points on the gold list and 23 on the held-out list, because they handle facts (an archived
-repository, a license, age) that the model gets wrong or ignores. Honest limits: the "Adopt needs scale" rule was added after the first
-results on the gold list, so 90% is optimistic; the held-out Adopt items were drawn with 10,000+ stars, so that rule is not
-independently tested there. A later design that sent only established technologies to the single prompt and the rest to the agents
-(not in the table; removed) scored 34/43 = 79% on the held-out list, the same as the single prompt alone, so the extra code earned
-nothing. Its held-out runs and the other variants' were stopped unfinished.
-
+handed. The rows with the "Adopt needs scale" rule are shown for comparison; it was added after the first results on the gold list,
+so its 90% is optimistic. A later design that sent only established technologies to the single prompt and the rest to the agents (not
+in the table; removed) scored 34/43 = 79% on the held-out list, so the extra code earned nothing. The held-out runs of the other
+variants were stopped unfinished.
 
 ```powershell
 python eval/run_gold.py --model qwen3:4b --host http://localhost:11435   # all 29, the way the app rates

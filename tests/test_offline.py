@@ -188,9 +188,8 @@ print("TECHNOLOGIES:", *[f"  {t['name']}: {t['ring']} ({t['quadrant']}) mentions
 assert "AI" not in techs, "generic word should be dropped"
 assert techs["ty"]["ring"] == "Assess" and techs["ty"]["llm_ring"] == "Adopt", "a repository only 40 days old: at most Assess"
 assert techs["ty"]["rule_notes"] == ["Adopt → Assess: first seen only 40 days ago, nothing is proven yet"], techs["ty"]["rule_notes"]
-for name in ("OpenTelemetry", "MCP", "Blazor"):   # the signals of this week show nothing about their age: not provably established
-    assert techs[name]["ring"] == "Trial" and techs[name]["llm_ring"] == "Adopt", name
-    assert techs[name]["rule_notes"] == ["Adopt → Trial: ADOPT needs years of use at scale, here the standing is unknown (nothing shows how old it is)"]
+for name in ("OpenTelemetry", "MCP", "Blazor"):   # the signals of this week show nothing about their age: no rule stands in the way of ADOPT
+    assert techs[name]["ring"] == "Adopt" and techs[name]["llm_ring"] == "Adopt" and techs[name]["rule_notes"] == [], name
 assert techs["Kubernetes"]["ring"] == "Hold" and techs["Kubernetes"]["mentions"] == 1, "model ring used as is"
 assert set(techs) == {"OpenTelemetry", "MCP", "ty", "Kubernetes", "Blazor"}, "only technologies found in the signals"
 
@@ -274,6 +273,31 @@ github_service.requests.get = real_get
 huge = pipeline.run_scan(dict(settings, days=10**9), FakeLLM())   # a whole scan with an absurd look-back
 assert huge["settings"]["days"] == 10**9 and len(huge["signals"]) >= len(result["signals"]) and huge["technologies"]
 print("OK look-back: 1 to 10^12 days, GitHub / Hacker News / RSS windows, points-ranked Hacker News search")
+
+# nothing is capped: top_n=None rates every technology found, and more signals make every source fetch more
+assert len(pipeline.run_scan(dict(settings, top_n=3), FakeLLM())["technologies"]) == 3
+everything = pipeline.run_scan(dict(settings, top_n=None), FakeLLM())
+assert len(everything["technologies"]) == everything["stats"]["candidates"] == 5, "every technology found is rated"
+assert len(pipeline.run_scan({k: v for k, v in settings.items() if k != "top_n"}, FakeLLM())["technologies"]) == 5, "no top_n setting: all"
+limits = []
+real_fetchers = (github_service.get_trending_repositories, yc_service.get_yc_companies, hn_service.get_hn_stories, rss_service.get_rss_items)
+github_service.get_trending_repositories = lambda limit, **kw: limits.append(("github", limit)) or []
+yc_service.get_yc_companies = lambda limit, **kw: limits.append(("yc", limit)) or []
+hn_service.get_hn_stories = lambda limit, **kw: limits.append(("hn", limit)) or []
+rss_service.get_rss_items = lambda feeds, per_feed, **kw: limits.append(("rss", per_feed)) or []
+for wanted, expected in ((40, [("github", 15), ("yc", 10), ("hn", 15), ("rss", 4)]),
+                         (400, [("github", 100), ("yc", 100), ("hn", 100), ("rss", 34)]),   # 400 / 4 sources = 100 each; 3 feeds in this test
+                         (4000, [("github", 1000), ("yc", 1000), ("hn", 1000), ("rss", 334)])):
+    limits.clear()
+    pipeline.collect_signals(dict(settings, max_signals=wanted, use_cache=False))
+    assert limits == expected, (wanted, limits)
+github_service.get_trending_repositories, yc_service.get_yc_companies, hn_service.get_hn_stories, rss_service.get_rss_items = real_fetchers
+page = []
+github_service.requests.get = lambda url, params=None, **kw: page.append(params) or fake_get(url, params, **kw)
+github_service.get_trending_repositories(limit=1000, technology_area="All", days=30)
+assert page[0]["per_page"] == 100, "GitHub gives at most 100 per page"
+github_service.requests.get = fake_get
+print("OK nothing is capped: every technology is rated, every source fetches enough for the signals asked for")
 
 # YC sorting by batch
 yc = yc_service.get_yc_companies(limit=1, technology_area="AI / LLM")
