@@ -1,4 +1,5 @@
-"""Facts and schemas for the four rating agents, one per source (GitHub, Y Combinator, Hacker News, RSS feeds).
+"""Facts and schemas for the five rating agents, one per source (GitHub, Y Combinator, Hacker News, RSS feeds and the
+package registries npm, PyPI, Maven Central and Docker Hub).
 
 Pure Python, no LLM. Every number the agents see is computed here, so the model only has to judge
 the numbers and cannot invent them."""
@@ -7,10 +8,12 @@ from datetime import date, datetime
 from typing import Literal, NamedTuple, get_args
 from urllib.parse import urlparse
 
-Lane = Literal["github", "ycombinator", "hackernews", "rss"]
+from config import REGISTRY_SOURCE
+
+Lane = Literal["github", "ycombinator", "hackernews", "rss", "packages"]
 LANES: tuple[Lane, ...] = get_args(Lane)
-LANE_SOURCE: dict[Lane, str] = {"github": "GitHub", "ycombinator": "Y Combinator",
-                                "hackernews": "Hacker News", "rss": "RSS feeds"}
+LANE_SOURCE: dict[Lane, str] = {"github": "GitHub", "ycombinator": "Y Combinator", "hackernews": "Hacker News",
+                                "rss": "RSS feeds", "packages": REGISTRY_SOURCE}
 
 # Every score is an integer from 0 to 10. SCORES_BY_LANE are written by the agent (the LLM);
 # COMPUTED_SCORES are calculated in code from the data and added to the scorecard.
@@ -20,8 +23,13 @@ SCORES_BY_LANE: dict[Lane, tuple[str, ...]] = {
     "hackernews": ("community_support", "developer_friction"),
     "rss": ("enterprise_traction", "maturity"),
     "ycombinator": ("market_momentum", "hype_risk"),
+    "packages": ("production_usage_score", "integration_velocity_score"),
 }
 COMPUTED_SCORES: dict[Lane, tuple[str, ...]] = {"github": ("licensing_risk",)}
+# The Package registries agent follows its own spec (prompts/rate_packages.md): scores from 1 to 10, and no `confidence` in
+# its answer, because how far its numbers can be trusted is known from the data (Facts.confidence_cap), not from the model.
+SCORE_FLOOR: dict[Lane, int] = {"packages": 1}
+CODE_CONFIDENCE_LANES = frozenset({"packages"})
 # For these, a HIGHER number is WORSE (for all other scores, higher is better).
 RISK_SCORES = frozenset({"developer_friction", "hype_risk", "licensing_risk"})
 
@@ -49,6 +57,7 @@ class Facts(NamedTuple):
     computed: dict[str, int]   # scores calculated in code, e.g. {"licensing_risk": 9}
     confidence_cap: str        # the agent may not claim more confidence than the amount of data allows
     limits: dict[str, int]     # upper bounds the prompt promises but a small model may break, e.g. {"project_health": 6}
+    unscored: tuple[str, ...] = ()   # scores the data cannot support at all: unknown, whatever the model answered
 
 
 def license_risk(spdx):
@@ -65,24 +74,25 @@ def license_risk(spdx):
 
 def lane_schema(lane):
     """JSON schema for the agent's answer. `summary` comes first so the model writes its reasoning before the scores."""
-    scores = {name: {"type": "integer", "minimum": SCORE_MIN, "maximum": SCORE_MAX} for name in SCORES_BY_LANE[lane]}
+    floor = SCORE_FLOOR.get(lane, SCORE_MIN)
+    scores = {name: {"type": "integer", "minimum": floor, "maximum": SCORE_MAX} for name in SCORES_BY_LANE[lane]}
+    confidence = {} if lane in CODE_CONFIDENCE_LANES else {"confidence": {"type": "string", "enum": ["high", "medium", "low"]}}
     return {
         "title": f"scorecard_{lane}",
         "type": "object",
-        "properties": {"summary": {"type": "string"}, **scores,
-                       "confidence": {"type": "string", "enum": ["high", "medium", "low"]}},
-        "required": ["summary", *scores, "confidence"],
+        "properties": {"summary": {"type": "string"}, **scores, **confidence},
+        "required": ["summary", *scores, *confidence],
     }
 
 
-def clean_scores(answer, names, limits=None):
-    """Models sometimes ignore minimum/maximum: clamp into 0-10 (and below `limits`), and map anything that is not a
+def clean_scores(answer, names, limits=None, floor=SCORE_MIN):
+    """Models sometimes ignore minimum/maximum: clamp into floor-10 (and below `limits`), and map anything that is not a
     number to None."""
     limits = limits or {}
     scores = {}
     for name in names:
         value = answer.get(name)
-        scores[name] = (max(SCORE_MIN, min(SCORE_MAX, limits.get(name, SCORE_MAX), round(value)))
+        scores[name] = (max(floor, min(SCORE_MAX, limits.get(name, SCORE_MAX), round(value)))
                         if isinstance(value, (int, float)) and not isinstance(value, bool) else None)
     return scores
 
@@ -172,7 +182,79 @@ def _rss(candidate, evidence, today):
     return Facts("\n".join(lines), metrics, {}, cap, {})
 
 
-_FACTS = {"github": _github, "hackernews": _hackernews, "ycombinator": _ycombinator, "rss": _rss}
+# Package registries. The evidence items come from services/registry_service.py and only hold packages that are known to BE
+# the technology (curated, repository link, Docker official image), so a name collision cannot pose as its downloads.
+PACKAGES_YOUNG_MONTHS = 6   # a package with less download history than this cannot show "sustained" use ...
+PACKAGES_YOUNG_MAX = 7      # ... so production_usage_score stays below 8 (the prompt says so, code enforces it)
+REGISTRY_LABEL = {"npm": "npm", "pypi": "PyPI", "maven": "Maven Central", "docker": "Docker Hub"}
+MATCH_TEXT = {"curated": "curated by bbv", "verified": "its repository link is the technology's GitHub repository",
+              "official": "Docker official image", "owner": "image of that name under the GitHub repository's owner"}
+
+
+def _count(n):
+    """1234567 -> '1.2M'. The registries give exact numbers; the agent only needs the size."""
+    if n is None:
+        return "unknown"
+    for suffix, size in (("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if n >= size * 0.9995:   # 999,999 is "1M", not "1000K"
+            return f"{n / size:.1f}".removesuffix(".0") + suffix
+    return str(n)
+
+
+def _growth(series):
+    """Month-over-month change in percent; None where the month before had no downloads."""
+    return [round((b - a) / a * 100) if a else None for a, b in zip(series, series[1:])]
+
+
+def _history_months(m, today):
+    """How long the package has been downloaded: the months with downloads, else the months since its first release."""
+    if m.get("monthly"):
+        return len(m["monthly"])
+    age = _age_days(m.get("first_release"), today)
+    return None if age is None else age // 30
+
+
+def _package_line(m):
+    head = f"{REGISTRY_LABEL[m['registry']]} {m['package']}"
+    if m["registry"] == "docker":
+        head += " (OFFICIAL image)" if m.get("official") else " (unofficial image)"
+        facts = [f"lifetime pulls {_count(m.get('lifetime'))}", f"stars {_show(m.get('stars'))}",
+                 f"registered {_show(m.get('first_release'))}", f"last updated {_show(m.get('latest_release'))}"]
+    else:
+        facts = ["no download counts are published" if m["registry"] == "maven"
+                 else f"downloads in the last 30 days {_count(m.get('last_30d'))}"]
+        series = m.get("monthly") or []
+        if len(series) >= 2:
+            facts.append("monthly downloads, oldest to newest: " + ", ".join(_count(v) for v in series))
+            facts.append("month-over-month: " + ", ".join("n/a" if g is None else f"{g:+d}%" for g in _growth(series)))
+        if m.get("window_total") is not None:
+            facts.append(f"total over the last {m['window_days']} days {_count(m['window_total'])}")
+        packages, repos = m.get("dependent_packages"), m.get("dependent_repos")
+        facts.append("dependents unknown" if packages is None and repos is None
+                     else f"dependents: {_count(packages)} packages, {_count(repos)} GitHub repositories")
+        facts.append(f"{_show(m.get('versions'))} versions, latest {_show(m.get('latest'))} "
+                     f"released {_show(m.get('latest_release'))}")
+    return f"- {head} | match: {MATCH_TEXT[m['match']]} | " + " | ".join(facts)
+
+
+def _packages(candidate, evidence, today):
+    records = [_meta(e) for e in evidence]
+    lines = ["Package registry data for this technology (npm, PyPI, Maven Central, Docker Hub). Every package below is known to "
+             "be this technology. Numbers were measured by code. Only Docker Hub reports lifetime numbers: npm and PyPI show "
+             "a window of recent days, and Maven Central publishes no download counts at all:"]
+    lines += [_package_line(m) for m in records]
+    measured = any(m.get(k) is not None for m in records for k in ("last_30d", "lifetime", "dependent_packages", "dependent_repos"))
+    ages = [h for m in records if (h := _history_months(m, today)) is not None]
+    # high: a real trend (3+ months of downloads). A single month, a Docker pull count or a dependents count is medium.
+    cap = "low" if not measured else "high" if any(len(m.get("monthly") or []) >= 3 for m in records) else "medium"
+    metrics = {"packages": [dict(m, month_over_month=_growth(m["monthly"])) if m.get("monthly") else m for m in records]}
+    # Growth needs two months of downloads. Without them the score is unknown, whatever the model answered.
+    unscored = () if any(len(m.get("monthly") or []) >= 2 for m in records) else ("integration_velocity_score",)
+    limits = {"production_usage_score": PACKAGES_YOUNG_MAX} if ages and max(ages) < PACKAGES_YOUNG_MONTHS else {}
+    return Facts("\n".join(lines), metrics, {}, cap, limits, unscored)
+
+
+_FACTS = {"github": _github, "hackernews": _hackernews, "ycombinator": _ycombinator, "rss": _rss, "packages": _packages}
 
 
 def lane_facts(lane, candidate, evidence, today=None):

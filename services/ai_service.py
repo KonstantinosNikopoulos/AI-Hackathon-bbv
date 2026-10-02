@@ -16,7 +16,7 @@ PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 SOURCE_PROMPTS = {"GitHub": "github", "Y Combinator": "ycombinator", "Hacker News": "hackernews", "RSS feeds": "rss"}
 
 # Rating prompts of the multi-agent graph (services/radar_graph.py): one agent per source, a skeptic and a judge.
-RATING_PROMPTS = ["rate_github", "rate_ycombinator", "rate_hackernews", "rate_rss", "antihype", "judge"]
+RATING_PROMPTS = ["rate_github", "rate_ycombinator", "rate_hackernews", "rate_rss", "rate_packages", "antihype", "judge"]
 
 
 def prompt_path(name):

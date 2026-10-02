@@ -16,8 +16,8 @@ if "ollama" not in sys.modules:
 
 import config  # noqa: E402
 from services import ai_service, radar_graph as rg  # noqa: E402
-from services.radar_lanes import (LANES, LANE_SOURCE, RISK_SCORES, SCORES_BY_LANE, cap_confidence, clean_scores,  # noqa: E402
-                                  lane_facts, lane_schema, license_risk)
+from services.radar_lanes import (LANES, LANE_SOURCE, RISK_SCORES, SCORES_BY_LANE, _count, cap_confidence,  # noqa: E402
+                                  clean_scores, lane_facts, lane_schema, license_risk)
 
 TODAY = date(2026, 10, 2)
 
@@ -45,10 +45,19 @@ VERDICT = {"category": "TRIAL", "justification": "j", "confidence": "medium", "r
 # ------------------------------------------------------------------ constants
 assert set(rg.RING_BY_CODE.values()) == set(config.RINGS) and rg.RING_ORDER == [r.upper() for r in config.RINGS]
 assert set(LANES) == set(LANE_SOURCE) == set(SCORES_BY_LANE) and all(len(v) == 2 for v in SCORES_BY_LANE.values())
-assert set(LANE_SOURCE.values()) == set(config.SOURCES), "one rating agent per collected source, no more"
+assert set(LANE_SOURCE.values()) == set(config.SOURCES), "one rating agent per source in config.SOURCES, no more"
+assert LANES == ("github", "ycombinator", "hackernews", "rss", "packages") and LANE_SOURCE["packages"] == config.REGISTRY_SOURCE
+assert SCORES_BY_LANE["packages"] == ("production_usage_score", "integration_velocity_score"), "the names of the spec"
+assert os.getenv("RADAR_LANE_CONCURRENCY") or rg.LANE_CONCURRENCY >= len(LANES), "by default all source agents of a technology run at once"
 assert RISK_SCORES <= {s for lane in LANES for s in SCORES_BY_LANE[lane] + rg.COMPUTED_SCORES.get(lane, ())}
 for name in [*ai_service.RATING_PROMPTS]:
     assert ai_service.load_prompt(name), name
+spec = ai_service.load_prompt("rate_packages")   # the system prompt of the fifth agent is the spec's text, word for word
+assert "rate_packages" in ai_service.RATING_PROMPTS and spec.startswith("You are a supply chain and dependency analyst. I will provide API")
+assert ('"production_usage_score" (1-10, where 10 means massive, sustained industry-wide downloads)\n'
+        '- "integration_velocity_score" (1-10, measuring the growth rate of downloads/pulls)\n'
+        '- "summary" (A 2-sentence justification of the scores, highlighting specific download milestones or dependency gravity)') in spec
+assert "Do not assign a Tech Radar category. Output a JSON object with:" in spec and "Official vs. unofficial Docker image pull counts." in spec
 assert "{" not in rg.judge_system(), "judge prompt placeholders ({bbv_context}, {matrix}) must be filled"
 assert "above 7" in rg.judge_system() and "HOLD" in rg.judge_system()
 print("OK constants and prompts")
@@ -104,6 +113,65 @@ assert lane_facts("rss", cand(), [site(0, "a.com"), site(1, "b.com")], TODAY).co
 schema = lane_schema("rss")
 assert list(schema["properties"])[0] == "summary" and set(schema["required"]) == {"summary", "enterprise_traction", "maturity", "confidence"}
 print("OK lane facts, license risk, schemas")
+
+
+# ------------------------------------------------------------------ the Package registries agent (the fifth source)
+def pkg_ev(**meta):
+    return ev(config.REGISTRY_SOURCE, 0, **meta)   # what services/registry_service.py produces
+
+
+growing = [10_000_000, 11_000_000, 12_100_000, 13_300_000, 14_600_000, 16_100_000]
+npm_meta = dict(registry="npm", package="foo", match="verified", official=False, last_30d=growing[-1], monthly=growing,
+                window_days=360, window_total=sum(growing), dependent_packages=1200, dependent_repos=66000, versions=64,
+                latest="1.9.1", latest_release="2026-03-25", first_release="2020-02-05", repository="a/foo")
+docker_meta = dict(registry="docker", package="library/redis", match="official", official=True, lifetime=11_371_016_757,
+                   stars=13620, first_release="2014-06-05", latest_release="2026-09-29")
+maven_meta = dict(registry="maven", package="io.x:y", match="curated", official=False, last_30d=None, monthly=[], window_days=None,
+                  window_total=None, dependent_packages=624, dependent_repos=1029, versions=104, latest="1.66.0",
+                  latest_release="2026-09-12", first_release="2019-11-19")
+young_npm = dict(npm_meta, monthly=[2_000_000, 6_000_000], last_30d=6_000_000, window_total=8_000_000)
+
+f = lane_facts("packages", cand(), [pkg_ev(**npm_meta)], TODAY)
+assert "npm foo | match: its repository link is the technology's GitHub repository | downloads in the last 30 days 16.1M" in f.text
+assert "monthly downloads, oldest to newest: 10M, 11M, 12.1M, 13.3M, 14.6M, 16.1M" in f.text
+assert "month-over-month: +10%, +10%, +10%, +10%, +10%" in f.text, f.text
+assert "total over the last 360 days 77.1M" in f.text and "dependents: 1.2K packages, 66K GitHub repositories" in f.text
+assert "64 versions, latest 1.9.1 released 2026-03-25" in f.text
+assert f.metrics["packages"][0]["month_over_month"] == [10, 10, 10, 10, 10] and f.metrics["packages"][0]["package"] == "foo"
+assert (f.confidence_cap, f.limits, f.unscored, f.computed) == ("high", {}, (), {}), "six months of downloads: a real trend"
+
+# not enough history: a young package cannot show "sustained" use, and one month has no growth rate
+y = lane_facts("packages", cand(), [pkg_ev(**young_npm)], TODAY)
+assert y.limits == {"production_usage_score": 7} and y.unscored == () and y.confidence_cap == "medium" and "month-over-month: +200%" in y.text
+one = lane_facts("packages", cand(), [pkg_ev(**dict(npm_meta, monthly=[6_000_000], last_30d=6_000_000, window_total=6_000_000))], TODAY)
+assert one.unscored == ("integration_velocity_score",) and one.limits == {"production_usage_score": 7} and "month-over-month" not in one.text
+
+# Docker Hub: lifetime pulls, official vs unofficial, no trend
+d = lane_facts("packages", cand(), [pkg_ev(**docker_meta)], TODAY)
+assert "Docker Hub library/redis (OFFICIAL image) | match: Docker official image | lifetime pulls 11.4B | stars 13620" in d.text
+assert d.limits == {} and d.unscored == ("integration_velocity_score",) and d.confidence_cap == "medium", "a 12 year old image, but no trend"
+assert "(unofficial image)" in lane_facts("packages", cand(), [pkg_ev(**dict(docker_meta, official=False, match="owner"))], TODAY).text
+# an old Docker image shows sustained use even when the npm package is new; one trend is enough to score growth
+mixed = lane_facts("packages", cand(), [pkg_ev(**young_npm), pkg_ev(**docker_meta)], TODAY)
+assert mixed.limits == {} and mixed.unscored == () and mixed.text.count("\n- ") == 2 and mixed.confidence_cap == "medium"
+
+# Maven Central: no downloads, only dependents and releases
+mv = lane_facts("packages", cand(), [pkg_ev(**maven_meta)], TODAY)
+assert "no download counts are published" in mv.text and "dependents: 624 packages, 1K GitHub repositories" in mv.text
+assert (mv.confidence_cap, mv.limits, mv.unscored) == ("medium", {}, ("integration_velocity_score",))
+nothing = lane_facts("packages", cand(), [pkg_ev(**dict(maven_meta, dependent_packages=None, dependent_repos=None))], TODAY)
+assert nothing.confidence_cap == "low" and "dependents unknown" in nothing.text
+
+# the answer has exactly the keys of the spec, scores run from 1 to 10, the other agents still from 0
+schema = lane_schema("packages")
+assert list(schema["properties"]) == ["summary", "production_usage_score", "integration_velocity_score"], "no confidence field"
+assert schema["required"] == list(schema["properties"]) and schema["title"] == "scorecard_packages"
+assert all(schema["properties"][n]["minimum"] == 1 and schema["properties"][n]["maximum"] == 10 for n in SCORES_BY_LANE["packages"])
+assert lane_schema("rss")["properties"]["maturity"]["minimum"] == 0
+assert clean_scores({"a": 0, "b": 15, "c": 3}, "abc", floor=1) == {"a": 1, "b": 10, "c": 3}
+assert [_count(n) for n in (None, 0, 999, 1000, 1234, 999_499, 999_999, 12_100_000, 999_999_999, 11_371_016_757)] \
+    == ["unknown", "0", "999", "1K", "1.2K", "999.5K", "1M", "12.1M", "1B", "11.4B"], "sizes, never '1000K'"
+print("OK package registry facts: trend, caps, unknowns, confidence from the data, the spec's schema")
 
 # ------------------------------------------------------------------ decision matrix (code, not prompt)
 def matrix(category, cards, fatal=False):
@@ -196,19 +264,19 @@ async def flow():
     cfg = {"max_concurrency": rg.LANE_CONCURRENCY}
     rg.evaluate_lane, rg.write_risk_memo, rg.decide = fake_eval, fake_memo, fake_decide
 
-    # four agents really run at the same time (a 4-party barrier would deadlock if they ran one after another)
-    gate = asyncio.Barrier(4)
+    # five agents really run at the same time (a 5-party barrier would deadlock if they ran one after another)
+    gate = asyncio.Barrier(len(LANES))
 
     async def barrier_eval(llm, payload):
         await asyncio.wait_for(gate.wait(), 5)
         return card(payload["lane"])
 
     rg.evaluate_lane = barrier_eval
-    out = await graph.ainvoke(all_lanes(cand()), config=cfg)
+    out = await graph.ainvoke(all_lanes(cand()), config={"max_concurrency": len(LANES)})
     assert sorted(c["lane"] for c in out["scorecards"]) == sorted(LANES) and out["errors"] == []
     assert out["fatal_flaws_found"] is True and out["risk_memo"].startswith("Risk one")
     assert out["verdict"]["category"] == "ASSESS" and out["rule_notes"], "judge node applies the matrix to the model's TRIAL"
-    print("OK 4 source agents in parallel, scorecards merged, anti-hype + judge, matrix applied inside the judge node")
+    print("OK 5 source agents in parallel, scorecards merged, anti-hype + judge, matrix applied inside the judge node")
 
     # only sources with data run; the skeptic and the judge run once
     reset(); rg.evaluate_lane = fake_eval
@@ -216,6 +284,21 @@ async def flow():
     assert sorted(log["eval"]) == ["github", "rss"] and log["memo"] == 1 and len(log["decide"]) == 1
     assert log["decide"][0][0] == ["github", "rss"]
     print("OK partial dispatch: 2 sources -> 2 agent calls, skeptic once, judge once")
+
+    # the fifth lane is routed like the others: registry evidence alone starts it, and without evidence it never runs
+    reset()
+    state = rg.initial_state(cand("GitHub", "Package registries"))
+    assert sorted(state["raw"]) == ["github", "packages"] and state["raw"]["packages"]["evidence"][0]["source"] == config.REGISTRY_SOURCE
+    assert [s.node for s in rg.route_to_evaluators(state)] == ["github", "packages"]
+    out = await graph.ainvoke(state, config=cfg)
+    assert sorted(log["eval"]) == ["github", "packages"] and log["decide"][0][0] == ["github", "packages"]
+    reset()
+    await graph.ainvoke(rg.initial_state(cand("Package registries")), config=cfg)
+    assert log["eval"] == ["packages"] and log["memo"] == 1 and len(log["decide"]) == 1, "registry data alone is enough to rate"
+    reset()
+    await graph.ainvoke(rg.initial_state(cand("GitHub", "Hacker News", "RSS feeds", "Y Combinator")), config=cfg)
+    assert "packages" not in log["eval"] and len(log["eval"]) == 4, "no registry evidence, no fifth agent call"
+    print("OK packages lane: dispatched by registry evidence only, alone or with the others")
 
     # nothing to rate -> straight to the judge fallback, zero LLM calls
     reset()
@@ -365,6 +448,7 @@ async def hostile():
     judge_user = chat.seen[0][1][1][1]
     assert "fatal flaws found: YES" in judge_user and "Bad. Worse. Worst." in judge_user
     assert "GitHub agent: NO USABLE DATA" in judge_user and "unknown, not good news" in judge_user
+    assert "Package registries agent: NO USABLE DATA" in judge_user, "the fifth source is named too when it has nothing"
     # the skeptic: the model writes the memo, CODE decides fatal_flaws_found (a model once invented a "friction 9")
     chat = FakeChat({"risk_memo": {"memo": " m ", "fatal_flaws_found": True}})   # a model claiming a flaw is ignored
     risk = await rg.write_risk_memo(chat, cand("RSS feeds"), [card("rss")])
@@ -375,6 +459,31 @@ async def hostile():
     assert risk["fatal_flaws_found"] is True
     assert "licensing_risk is 9" in chat.seen[0][1][1][1] and "put them first" in chat.seen[0][1][1][1]
     print("OK real LLM functions: cleaning, errors, polarity/unknown lanes in the prompts")
+
+    # the Package registries agent: the spec's three keys, scores 1-10, confidence decided by the data, caps and unknowns in code
+    def reg_payload(*metas):
+        return {"lane": "packages", "candidate": cand(), "lane_raw": {"evidence": [pkg_ev(**m) for m in metas]}}
+
+    said = {"summary": " Downloads grew every month. ", "production_usage_score": 9, "integration_velocity_score": 0, "confidence": "low"}
+    chat = FakeChat({"scorecard_packages": said})
+    card_ = await rg.evaluate_lane(chat, reg_payload(npm_meta))
+    assert card_["scores"] == {"production_usage_score": 9, "integration_velocity_score": 1}, "0 is below the 1-10 scale"
+    assert card_["confidence"] == "high", "the model's own 'low' is not used: six months of downloads decide"
+    assert card_["summary"] == "Downloads grew every month." and card_["metrics"]["packages"][0]["month_over_month"] == [10] * 5
+    system, user = chat.seen[0][1]
+    assert system[1] == ai_service.load_prompt("rate_packages") and "Technology: Foo" in user[1] and "Package registry data" in user[1]
+    young_card = await rg.evaluate_lane(FakeChat({"scorecard_packages": dict(said, production_usage_score=10)}), reg_payload(young_npm))
+    assert young_card["scores"]["production_usage_score"] == 7 and young_card["confidence"] == "medium", "two months: not 'sustained'"
+    pulls = await rg.evaluate_lane(FakeChat({"scorecard_packages": dict(said, integration_velocity_score=8)}), reg_payload(docker_meta))
+    assert pulls["scores"] == {"production_usage_score": 9, "integration_velocity_score": None}, "no trend: unknown, not the model's guess"
+    assert pulls["confidence"] == "medium"
+    try:
+        await rg.evaluate_lane(FakeChat({"scorecard_packages": {"summary": "s", "production_usage_score": "?",
+                                                                "integration_velocity_score": 8}}), reg_payload(docker_meta))
+        raise AssertionError("should have raised")   # the only score the data supports is unusable, the other is unknown
+    except ValueError:
+        pass
+    print("OK package registries agent: 1-10 scores, confidence and caps from the data, unknown growth without a trend")
 
     # the whole graph with the real nodes and a scripted model: happy path, then a model that times out
     replies = {"scorecard_rss": {"summary": "InfoQ and CNCF report production use.", "enterprise_traction": 8, "maturity": 9,
@@ -390,6 +499,20 @@ async def hostile():
                                   cand("RSS feeds"))
     assert res["answer"]["ring"] == "Assess" and res["errors"] == ["Foo / rss: ollama timed out"], res
     print("OK whole graph with the real nodes: happy path, and a model timeout degrades to Assess")
+
+    # five lanes through the real nodes: an RSS article pair and a registry lookup are scored side by side
+    both = dict(cand("RSS feeds", "RSS feeds"), evidence=[ev("RSS feeds", 0), ev("RSS feeds", 1), pkg_ev(**npm_meta)])
+    packages_reply = {"summary": "16.1M downloads a month, up 10% a month.", "production_usage_score": 8, "integration_velocity_score": 7}
+    res = await rg.rate_candidate(rg.build_graph(FakeChat(dict(replies, scorecard_packages=packages_reply))), both)
+    assert sorted(c["lane"] for c in res["scorecards"]) == ["packages", "rss"] and res["errors"] == [], res["errors"]
+    package_card = next(c for c in res["scorecards"] if c["lane"] == "packages")
+    assert package_card["scores"] == {"production_usage_score": 8, "integration_velocity_score": 7} and package_card["confidence"] == "high"
+    # a registry agent that fails costs only its own card
+    res = await rg.rate_candidate(rg.build_graph(FakeChat(dict(replies, scorecard_packages=TimeoutError("ollama timed out")))), both)
+    failed_card = next(c for c in res["scorecards"] if c["lane"] == "packages")
+    assert failed_card["status"] == "error" and failed_card["scores"] == {"production_usage_score": None, "integration_velocity_score": None}
+    assert res["errors"] == ["Foo / packages: ollama timed out"] and res["answer"]["ring"] == "Adopt", "the others still decide"
+    print("OK five lanes through the real nodes: registry numbers scored next to the press, a failure stays local")
 
 
 asyncio.run(hostile())

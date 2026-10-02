@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from config import (AREAS, BATCH_SIZE, DEFAULT_DAYS, DEFAULT_MAX_SIGNALS, DEFAULT_MODEL, DEFAULT_OLLAMA_HOST,
-                    DEFAULT_TOP_N, QUADRANTS, RINGS, SOURCES, SUGGESTED_MODELS)
+                    DEFAULT_TOP_N, QUADRANTS, REGISTRY_SOURCE, RINGS, SOURCES, SUGGESTED_MODELS)
 from services import export, pipeline, storage
 from services import ai_service
 from services.ai_service import LLM, SOURCE_PROMPTS
@@ -40,6 +40,7 @@ PROMPT_LABELS = {
     "Shared rules (added to every source prompt)": "_rules",
     "Rating agent: GitHub": "rate_github", "Rating agent: Y Combinator": "rate_ycombinator",
     "Rating agent: Hacker News": "rate_hackernews", "Rating agent: RSS feeds": "rate_rss",
+    "Rating agent: Package registries (npm, PyPI, Maven Central, Docker Hub)": "rate_packages",
     "Anti-hype agent (looks for reasons to reject)": "antihype", "Judge (decision matrix, picks the ring)": "judge",
     "Classic rating prompt (single prompt, not used by the agents)": "classify",
 }
@@ -89,16 +90,19 @@ with st.sidebar:
                          help="llama3.2:3b is fastest. qwen3:4b usually gives better reasons.")
 
     area = st.selectbox("Technology area", list(AREAS))
-    sources = st.multiselect("Sources", SOURCES, default=SOURCES)
+    sources = st.multiselect("Sources", SOURCES, default=SOURCES,
+                             help=f"{REGISTRY_SOURCE} collect no signals: they look up the technologies the other sources "
+                                  "found in npm, PyPI, Maven Central and Docker Hub, and rate their download numbers.")
     days = st.slider("Look back (days)", 7, 90, DEFAULT_DAYS)
     max_signals = st.slider("Signals sent to the LLM", 8, 80, DEFAULT_MAX_SIGNALS, step=8)
     top_n = st.slider("Technologies to rate", 5, 25, DEFAULT_TOP_N)
     use_cache = st.checkbox("Reuse sources fetched in the last hour", value=True,
                             help="Saves time and the GitHub rate limit while you tune prompts. Untick for fresh data.")
-    calls = math.ceil(max_signals / BATCH_SIZE) + top_n * 6   # per technology: up to 4 source agents + anti-hype + judge
+    calls = math.ceil(max_signals / BATCH_SIZE) + top_n * 7   # per technology: up to 5 source agents + anti-hype + judge
     st.caption(f"Up to ≈ {calls} LLM calls per scan (a source agent only runs when its source has data). "
                "On a CPU expect about 10–30 s each.")
-    scan = st.button("🔍 Scan & analyze", type="primary", disabled=not sources)
+    # Package registries only look up what the other sources found, so at least one of those is needed.
+    scan = st.button("🔍 Scan & analyze", type="primary", disabled=not any(s != REGISTRY_SOURCE for s in sources))
 
     st.divider()
     st.subheader("🕘 Saved runs")
@@ -145,7 +149,8 @@ if not result:
 2. **Clean**: drop noise (funding, hiring…) and duplicates, mix sources fairly.
 3. **Extract**: the LLM names the technologies the signals are about.
 4. **Merge and rank**: the same technology from several sources counts more.
-5. **Rate**: one agent per source scores the evidence in parallel, an anti-hype agent looks for reasons to reject, and a judge
+5. **Rate**: one agent per source scores the evidence in parallel (the package registries agent reads real npm, PyPI,
+   Maven Central and Docker Hub download numbers), an anti-hype agent looks for reasons to reject, and a judge
    proposes a ring using a decision matrix; simple rules check it (e.g. a 3-month-old repo can't be *Adopt*).
 """)
     with st.expander("🧠 Prompts"):

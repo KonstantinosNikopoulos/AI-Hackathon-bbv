@@ -9,7 +9,7 @@ Rings:
 
 How to read the scorecards:
 - Scores are 0 to 10. For developer_friction, hype_risk and licensing_risk a HIGHER number is WORSE. For every other score a HIGHER number is better.
-- GitHub scores show developer speed and project care, not maturity. Hacker News shows attention, not maturity. Y Combinator shows where the market is heading, not that it is proven. RSS (engineering press) is the best sign of maturity.
+- GitHub scores show developer speed and project care, not maturity. Hacker News shows attention, not maturity. Y Combinator shows where the market is heading, not that it is proven. RSS (engineering press) is the best sign of maturity. Package registries (npm, PyPI, Maven Central, Docker Hub) show how much it is really downloaded and depended on, which is harder evidence of production use than attention.
 - A source with NO USABLE DATA is unknown, not good news.
 
 Decision matrix. These rules are checked by code after you answer, so follow them:

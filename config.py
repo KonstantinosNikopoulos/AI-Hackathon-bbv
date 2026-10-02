@@ -26,10 +26,26 @@ OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD") or 0) or None
 
 # Rating agents run in parallel on the local Ollama. Requests in flight at once = TECH x LANE.
 # Lower these (e.g. RADAR_LANE_CONCURRENCY=1) if the GPU runs out of memory or the model is slow.
-GRAPH_LANE_CONCURRENCY = int(os.getenv("RADAR_LANE_CONCURRENCY", "4"))   # source agents of ONE technology at once
+GRAPH_LANE_CONCURRENCY = int(os.getenv("RADAR_LANE_CONCURRENCY", "5"))   # source agents of ONE technology at once (5 = all)
 GRAPH_TECH_CONCURRENCY = int(os.getenv("RADAR_TECH_CONCURRENCY", "1"))   # technologies rated at once
 
-SOURCES = ["GitHub", "Y Combinator", "Hacker News", "RSS feeds"]
+# The fifth source is different: it collects no signals. Once the other sources have named the technologies, each one is
+# looked up in the package registries (npm, PyPI, Maven Central, Docker Hub) and the Package registries agent rates its downloads.
+REGISTRY_SOURCE = "Package registries"
+SOURCES = ["GitHub", "Y Combinator", "Hacker News", "RSS feeds", REGISTRY_SOURCE]
+REGISTRY_WORKERS = 4   # technologies looked up in the registries at the same time
+
+# Which packages ARE a technology. Key: the technology as the radar names it (lower case, after the ALIASES in
+# services/pipeline.py). Value: package names per registry (Maven: "group:artifact", Docker: "namespace/image", an official
+# image is "library/<name>"). Extend this during the day.
+# Without an entry the lookup only accepts a Docker official image of that name, and an npm/PyPI package of that name if its
+# repository link is the technology's own GitHub repository: a matching name alone is never evidence (see registry_service.py).
+PACKAGE_MAP = {
+    "model context protocol": {"npm": ["@modelcontextprotocol/sdk"], "pypi": ["mcp"]},
+    "opentelemetry": {"npm": ["@opentelemetry/api"], "pypi": ["opentelemetry-api"],
+                      "maven": ["io.opentelemetry:opentelemetry-api"]},
+    "langgraph": {"npm": ["@langchain/langgraph"], "pypi": ["langgraph"]},
+}
 
 # Edit this: it tells the LLM what "relevant for bbv" means.
 BBV_CONTEXT = (

@@ -1,6 +1,7 @@
 """Offline test of the whole pipeline: no internet, no Ollama.
 Run from the project folder:  python tests/test_offline.py"""
 import os
+import re
 import sys
 import tempfile
 import types
@@ -19,10 +20,13 @@ import config  # noqa: E402
 
 config.DATA_DIR = tempfile.mkdtemp()
 from services import export, pipeline, radar_chart, rss_service, storage  # noqa: E402
-from services import github_service, hn_service, yc_service  # noqa: E402
+from services import github_service, hn_service, registry_service, yc_service  # noqa: E402
 from services.radar_lanes import RISK_SCORES  # noqa: E402
 
 pipeline.CACHE_DIR = os.path.join(config.DATA_DIR, "cache")
+registry_service.PYPISTATS_GAP = 0   # no real pause between pypistats requests
+# One technology is curated (OpenTelemetry on npm and Maven); "ty" is found through its own GitHub repository; the rest has no package.
+pipeline.PACKAGE_MAP = {"opentelemetry": {"npm": ["@opentelemetry/api"], "maven": ["io.opentelemetry:opentelemetry-api"]}}
 
 now = datetime.now(timezone.utc)
 ago = lambda d: now - timedelta(days=d)  # noqa: E731
@@ -60,7 +64,42 @@ class Resp:
             raise Exception(f"HTTP {self.status_code}")
 
 
+REGISTRY_CALLS = []
+
+
+def registry_get(url):
+    """npm, pypistats, ecosyste.ms and Docker Hub with a few packages: PyPI "ty" (its repository is astral-sh/ty), npm
+    @opentelemetry/api and its Maven artifact. An npm package called "ty" belongs to somebody else. Everything else: 404."""
+    REGISTRY_CALLS.append(url)
+
+    def eco(**changes):
+        return Resp({"latest_release_number": "1.0.0", "latest_release_published_at": "2026-09-01T00:00:00.000Z", "versions_count": 12,
+                     "dependent_packages_count": 40, "dependent_repos_count": 900, "downloads": 1_000_000,
+                     "downloads_period": "last-month", **changes})
+
+    if "registries/pypi.org/packages/ty" in url:
+        return eco(repository_url="git+https://github.com/astral-sh/ty.git")
+    if "registries/npmjs.org/packages/ty" in url:
+        return eco(repository_url="https://github.com/someone/ty")
+    if "registries/npmjs.org/packages/%40opentelemetry%2Fapi" in url:
+        return eco(repository_url="https://github.com/open-telemetry/opentelemetry-js")
+    if "registries/repo1.maven.org/packages/io.opentelemetry%3Aopentelemetry-api" in url:
+        return eco(repository_url="https://github.com/open-telemetry/opentelemetry-java", downloads=None, downloads_period=None)
+    if "pypistats.org/api/packages/ty/overall" in url:   # 30000, 60000 ... 180000 downloads in the six months
+        end = now.date() - timedelta(days=1)
+        return Resp({"data": [{"category": "without_mirrors", "date": str(end - timedelta(days=age)),
+                               "downloads": 1000 * (6 - age // 30)} for age in range(179, -1, -1)]})
+    if "api.npmjs.org/downloads/range/" in url and "@opentelemetry/api" in url:   # 3M, 6M ... 36M downloads in the twelve months
+        start, end = (datetime.fromisoformat(x).date() for x in re.search(r"range/([\d-]+):([\d-]+)/", url).groups())
+        n = (end - start).days + 1
+        return Resp({"downloads": [{"day": str(start + timedelta(days=i)), "downloads": 100_000 * (12 - (n - 1 - i) // 30)}
+                                   for i in range(n)]})
+    return Resp(status=404)
+
+
 def fake_get(url, params=None, headers=None, timeout=None):
+    if any(host in url for host in ("ecosyste.ms", "pypistats.org", "api.npmjs.org", "hub.docker.com")):
+        return registry_get(url)
     if "api.github.com" in url:
         return Resp({"items": [
             {"name": "ty", "full_name": "astral-sh/ty", "language": "Rust", "html_url": "https://github.com/astral-sh/ty",
@@ -92,7 +131,7 @@ def fake_get(url, params=None, headers=None, timeout=None):
     return Resp(status=404)
 
 
-for module in (github_service, yc_service, hn_service, rss_service):
+for module in (github_service, yc_service, hn_service, rss_service, registry_service):
     module.requests.get = fake_get
 
 
@@ -192,29 +231,56 @@ gh_batch = next(u for h, _, u in llm.batches if "GitHub" in h)
 assert "language: Rust" in gh_batch and "stars" in gh_batch, gh_batch
 hn_batch = next(u for h, _, u in llm.batches if "Hacker News" in h)
 assert "points" in hn_batch and "link: example.com" in hn_batch, hn_batch
-assert set(result["settings"]["prompts"]) == {"github", "ycombinator", "hackernews", "rss", "_rules", "classify",
-                                              "rate_github", "rate_ycombinator", "rate_hackernews", "rate_rss", "antihype", "judge"}
+assert set(result["settings"]["prompts"]) == {"github", "ycombinator", "hackernews", "rss", "_rules", "classify", "rate_github",
+                                              "rate_ycombinator", "rate_hackernews", "rate_rss", "rate_packages", "antihype", "judge"}
 
 # rating agents: only sources with data run, then one anti-hype and one judge call per technology
 rated = [t for t in result["technologies"] if "scorecards" in t]   # rated by the agents (a seed that matched is rated too)
 assert len(rated) == 5 and all(t["scorecards"] and t["risk_memo"] for t in rated), "every rated technology carries its scorecards and memo"
 assert not any("scorecards" in t for t in result["technologies"] if t["is_seed"] and t["mentions"] == 0), "unmatched seeds are not rated"
-assert [c["lane"] for c in techs["ty"]["scorecards"]] == ["github"], techs["ty"]["scorecards"]
-assert techs["ty"]["scorecards"][0]["scores"]["licensing_risk"] == 1, "MIT license -> computed licensing_risk 1"
+assert sorted(c["lane"] for c in techs["ty"]["scorecards"]) == ["github", "packages"], techs["ty"]["scorecards"]
+assert next(c for c in techs["ty"]["scorecards"] if c["lane"] == "github")["scores"]["licensing_risk"] == 1, "MIT license -> computed licensing_risk 1"
 assert techs["ty"]["evidence"][0]["meta"]["stars"] == 4200, "evidence keeps meta for the agents"
-assert sorted(c["lane"] for c in techs["OpenTelemetry"]["scorecards"]) == ["github", "hackernews"], "its RSS copy was a duplicate"
+assert sorted(c["lane"] for c in techs["OpenTelemetry"]["scorecards"]) == ["github", "hackernews", "packages"], "its RSS copy was a duplicate"
 assert sorted(c["lane"] for c in techs["MCP"]["scorecards"]) == ["hackernews", "rss"]
 assert [c["lane"] for c in techs["Blazor"]["scorecards"]] == ["rss"] and techs["Blazor"]["scorecards"][0]["confidence"] == "medium"
 assert {c["lane"]: c["confidence"] for c in techs["MCP"]["scorecards"]} == {"hackernews": "low", "rss": "low"}, "one story / one article"
 assert len(chat.asked) == sum(len(t["scorecards"]) + 2 for t in rated), chat.asked
-print("AGENT CALLS:", len(chat.asked), "| extraction calls:", llm.calls)
 
-# source cache: a second scan with the network down reuses the fetched data
-for module in (github_service, yc_service, hn_service, rss_service):
+# package registries, the fifth source: looked up per technology, only what can be tied to it, and never an extra "mention"
+by_lane = lambda t: {c["lane"]: c for c in t["scorecards"]}  # noqa: E731
+ty_card = by_lane(techs["ty"])["packages"]
+assert ty_card["scores"] == {"production_usage_score": 6, "integration_velocity_score": 6} and ty_card["confidence"] == "high"
+assert [(p["registry"], p["package"], p["match"]) for p in ty_card["metrics"]["packages"]] == [("pypi", "ty", "verified")], \
+    "PyPI 'ty' links to the astral-sh/ty repository; the npm 'ty' belongs to someone else and is not counted"
+assert ty_card["metrics"]["packages"][0]["monthly"] == [30_000, 60_000, 90_000, 120_000, 150_000, 180_000]
+otel_card = by_lane(techs["OpenTelemetry"])["packages"]
+assert [(p["registry"], p["match"]) for p in otel_card["metrics"]["packages"]] == [("npm", "curated"), ("maven", "curated")]
+assert otel_card["metrics"]["packages"][0]["monthly"] == [3_000_000 * k for k in range(1, 13)]
+assert techs["ty"]["mentions"] == 1 and techs["ty"]["sources"] == ["GitHub"], "a download count is not a mention (Adopt needs 3+)"
+assert [e["source"] for e in techs["ty"]["evidence"]] == ["GitHub", "Package registries"], "the lookup is shown as evidence"
+assert techs["ty"]["evidence"][1]["url"] == "https://pypi.org/project/ty/"
+assert sorted(n for n, t in techs.items() if "scorecards" in t and "packages" in by_lane(t)) == ["OpenTelemetry", "ty"], \
+    "no package, no fifth agent"
+assert [u for u in REGISTRY_CALLS if "kubernetes" in u] == ["https://hub.docker.com/v2/repositories/library/kubernetes/"], \
+    "without an own repository or a curated entry a name is only looked up as a Docker official image"
+assert len(REGISTRY_CALLS) == 11, REGISTRY_CALLS   # OpenTelemetry 3, ty 5, and 1 each for MCP, Kubernetes and Blazor
+print("AGENT CALLS:", len(chat.asked), "| extraction calls:", llm.calls, "| registry requests:", len(REGISTRY_CALLS))
+
+# source cache: a second scan with the network down reuses the fetched data, the registry lookups included
+for module in (github_service, yc_service, hn_service, rss_service, registry_service):
     module.requests.get = lambda *a, **k: (_ for _ in ()).throw(Exception("offline"))
 again = pipeline.run_scan(settings, FakeLLM(), chat_model=FakeChat())
 assert len(again["signals"]) == len(result["signals"]) and not again["errors"][1:], again["errors"]
-for module in (github_service, yc_service, hn_service, rss_service):
+lanes = lambda r: {t["name"]: sorted(c["lane"] for c in t.get("scorecards", [])) for t in r["technologies"]}  # noqa: E731
+assert lanes(again) == lanes(result) and not any("Package registries" in e for e in again["errors"]), "registry lookups are cached too"
+# without the fifth source nothing is looked up (the network is down, so a lookup would show up as a warning)
+without = pipeline.run_scan(dict(settings, sources=[s for s in config.SOURCES if s != config.REGISTRY_SOURCE]), FakeLLM(),
+                            chat_model=FakeChat())
+assert not any(c["lane"] == "packages" for t in without["technologies"] for c in t.get("scorecards", []))
+assert not any(e["source"] == config.REGISTRY_SOURCE for t in without["technologies"] for e in t["evidence"])
+assert not any("Package registries" in e for e in without["errors"]) and "rate_packages" in without["settings"]["prompts"]
+for module in (github_service, yc_service, hn_service, rss_service, registry_service):
     module.requests.get = fake_get
 assert {t["quadrant"] for t in result["technologies"]} == set(config.QUADRANTS), "all quadrants filled"
 assert msgs[-1][0] == 1.0
@@ -239,6 +305,7 @@ assert svg.count('class="blip"') == len(result["technologies"])
 csv_text = export.byor_csv(numbered, st1)
 md = export.markdown_report(result, st1, numbered)
 assert csv_text.splitlines()[0] == "name,ring,quadrant,isNew,status,description"
+assert "signals from GitHub, Y Combinator, Hacker News, RSS feeds · package registries checked" in md, "registries add no signals"
 open(os.path.join(config.DATA_DIR, "radar_preview.html"), "w").write(svg)
 print("LLM calls:", llm.calls, "| radar preview:", os.path.join(config.DATA_DIR, "radar_preview.html"))
 print("ALL OFFLINE TESTS PASSED")

@@ -4,12 +4,15 @@ Map-Reduce with LangGraph's Send API. No agent talks to another agent: every nod
 state once and writes its own part. Nothing loops.
 
     START --Send--> github ------+
-            Send--> ycombinator -+--> anti_hype --> judge --> END
-            Send--> hackernews --+
+            Send--> ycombinator -+
+            Send--> hackernews --+--> anti_hype --> judge --> END
             Send--> rss ---------+
+            Send--> packages ----+
 
  1. Constants and OverallState (below, and radar_lanes.py for the per-source facts)
- 2. Map:       one agent per source that has data, all in parallel. They return a scorecard (two 0-10 scores).
+ 2. Map:       one agent per source that has data, all in parallel. They return a scorecard (two scores each).
+               The fifth source, the package registries (npm, PyPI, Maven Central, Docker Hub), is looked up per
+               technology by pipeline.attach_registry_evidence before the graph runs, and arrives as evidence.
  3. Anti-hype: reads the scorecards, hunts for reasons to reject, writes a 3-sentence risk memo.
  4. Judge:     reads scorecards + memo, applies the decision matrix, returns category + justification.
  5. Streamlit: rate_all / rate_candidate (async), called once per scan from pipeline.run_scan.
@@ -26,8 +29,9 @@ from langgraph.types import Send
 
 from config import BBV_CONTEXT, GRAPH_LANE_CONCURRENCY, GRAPH_TECH_CONCURRENCY, OLLAMA_NUM_THREAD, RINGS
 from services.ai_service import load_prompt
-from services.radar_lanes import (COMPUTED_NAMES, COMPUTED_SCORES, LANE_SOURCE, LANES, RISK_SCORES, SCORES_BY_LANE, Lane,
-                                  cap_confidence, clean_scores, lane_facts, lane_schema)
+from services.radar_lanes import (CODE_CONFIDENCE_LANES, COMPUTED_NAMES, COMPUTED_SCORES, LANE_SOURCE, LANES, RISK_SCORES,
+                                  SCORE_FLOOR, SCORE_MIN, SCORES_BY_LANE, Lane, cap_confidence, clean_scores, lane_facts,
+                                  lane_schema)
 
 # ------------------------------------------------------------------ 1. constants
 # The four rings as the spec writes them. config.RINGS stays the single source of truth for the app ("Adopt", ...);
@@ -51,7 +55,8 @@ TECH_CONCURRENCY = GRAPH_TECH_CONCURRENCY
 
 # ------------------------------------------------------------------ 1. state
 class Evidence(TypedDict):
-    """One signal linked to the technology (what pipeline.merge_candidates keeps). `meta` holds stars, points, ..."""
+    """One signal linked to the technology (what pipeline.merge_candidates keeps). `meta` holds stars, points, ...
+    A package registry lookup is evidence too (source "Package registries"); its download numbers are in `meta`."""
     source: str
     title: str
     url: str
@@ -78,7 +83,7 @@ class Scorecard(TypedDict):
     """What one source agent appends to the state."""
     lane: Lane
     status: Literal["scored", "error"]
-    scores: dict[str, int | None]   # 0-10, see radar_lanes.SCORES_BY_LANE (+ COMPUTED_SCORES); None when status == "error"
+    scores: dict[str, int | None]   # 0-10 (packages: 1-10), see radar_lanes.SCORES_BY_LANE (+ COMPUTED_SCORES); None = unknown
     confidence: Literal["high", "medium", "low"]
     summary: str                    # 1-2 sentences the anti-hype agent and the judge can quote
     metrics: dict[str, Any]         # the facts the agent was shown, e.g. {"repos": [...]}
@@ -104,13 +109,15 @@ class LaneInput(TypedDict):
     """The private payload of one Send. Not part of OverallState."""
     lane: Lane
     candidate: Candidate
-    lane_raw: dict[str, Any]        # {"evidence": [...]} for now; the seam for richer per-source API data later
+    lane_raw: dict[str, Any]        # {"evidence": [...]}; for the packages lane the items are registry lookups, not mentions
 
 
 class OverallState(TypedDict):
     # input
     candidate: Candidate
     raw: dict[Lane, dict[str, Any]]   # per-lane input; a lane that is not in here has no data and is not dispatched
+    #   The five lanes (radar_lanes.Lane): github, ycombinator, hackernews, rss, packages. Adding a source means adding a
+    #   lane there, not a field here: raw and scorecards are keyed by lane.
     # phase 1 (map): parallel agents append here; operator.add concatenates instead of overwriting
     scorecards: Annotated[list[Scorecard], operator.add]
     # phase 2 (anti-hype)
@@ -220,11 +227,14 @@ async def evaluate_lane(llm, payload: LaneInput) -> Scorecard:
     facts = lane_facts(lane, candidate, payload["lane_raw"]["evidence"])
     user = f"Technology: {candidate['name']}\nWhat it is: {candidate.get('what', '')}\n\n{facts.text}"
     answer = await _ask(llm, lane_schema(lane), load_prompt(f"rate_{lane}"), user)
-    scores = {**clean_scores(answer, SCORES_BY_LANE[lane], facts.limits), **facts.computed}
+    scores = {**clean_scores(answer, SCORES_BY_LANE[lane], facts.limits, SCORE_FLOOR.get(lane, SCORE_MIN)), **facts.computed}
+    scores.update({name: None for name in facts.unscored})   # the data cannot support these: unknown, whatever the model said
     if all(v is None for v in scores.values()):
         raise ValueError("the model returned no usable scores")
     # What the prompt asks, checked in code: the model cannot claim more confidence than the data allows.
-    return Scorecard(lane=lane, status="scored", scores=scores, confidence=cap_confidence(_confidence(answer), facts.confidence_cap),
+    # Some lanes are not asked for a confidence at all: the data alone decides it.
+    claimed = facts.confidence_cap if lane in CODE_CONFIDENCE_LANES else _confidence(answer)
+    return Scorecard(lane=lane, status="scored", scores=scores, confidence=cap_confidence(claimed, facts.confidence_cap),
                      summary=str(answer.get("summary", "")).strip()[:400], metrics=facts.metrics)
 
 
@@ -300,7 +310,8 @@ async def decide(llm, candidate: Candidate, scorecards: list[Scorecard], risk: R
 def route_to_evaluators(state: OverallState):
     """Conditional edge from START: one Send per source that has data. A source without data is never run,
     so no LLM call is spent on it. Returns "judge" when no source has any data, because an empty list of
-    Sends would end the graph without a verdict."""
+    Sends would end the graph without a verdict. The five lanes are radar_lanes.LANES: "packages" only has data
+    when the registry lookup tied a package to the technology (many have none), and is skipped like any empty source."""
     sends = [Send(lane, LaneInput(lane=lane, candidate=state["candidate"], lane_raw=raw))
              for lane in LANES if (raw := state["raw"].get(lane))]
     return sends or ["judge"]
@@ -316,7 +327,7 @@ async def _run_lane(lane: Lane, payload: LaneInput, llm) -> dict:
         return {"scorecards": [card], "errors": [f"{payload['candidate']['name']} / {lane}: {error}"]}
 
 
-# Four named nodes, because each source has its own prompt (prompts/rate_<source>.md) and its own facts.
+# Five named nodes, because each source has its own prompt (prompts/rate_<source>.md) and its own facts.
 async def github_node(payload: LaneInput, *, llm) -> dict:
     return await _run_lane("github", payload, llm)
 
@@ -331,6 +342,11 @@ async def hackernews_node(payload: LaneInput, *, llm) -> dict:
 
 async def rss_node(payload: LaneInput, *, llm) -> dict:
     return await _run_lane("rss", payload, llm)
+
+
+async def packages_node(payload: LaneInput, *, llm) -> dict:
+    """Package registries (npm, PyPI, Maven Central, Docker Hub): hard production usage and integration velocity."""
+    return await _run_lane("packages", payload, llm)
 
 
 # ------------------------------------------------------------------ 3. anti-hype
@@ -370,6 +386,7 @@ def build_graph(llm):
     builder.add_node("ycombinator", partial(ycombinator_node, llm=llm))
     builder.add_node("hackernews", partial(hackernews_node, llm=llm))
     builder.add_node("rss", partial(rss_node, llm=llm))
+    builder.add_node("packages", partial(packages_node, llm=llm))
     builder.add_node("anti_hype", partial(anti_hype_node, llm=llm))
     builder.add_node("judge", partial(judge_node, llm=llm))
 

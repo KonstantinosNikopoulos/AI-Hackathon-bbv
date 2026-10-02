@@ -4,10 +4,12 @@ import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
-from config import BATCH_SIZE, DATA_DIR, QUADRANTS, RINGS, RSS_FEEDS, SEED_RADAR
-from services import ai_service, github_service, hn_service, radar_graph, rss_service, yc_service
+from config import (BATCH_SIZE, DATA_DIR, PACKAGE_MAP, QUADRANTS, REGISTRY_SOURCE, REGISTRY_WORKERS, RINGS, RSS_FEEDS,
+                    SEED_RADAR)
+from services import ai_service, github_service, hn_service, radar_graph, registry_service, rss_service, yc_service
 
 NOISE = re.compile(r"\b(raises|funding|series [a-d]|acquires|acquisition|layoffs?|hiring|podcast|webinar|"
                    r"episode|newsletter|sponsored|discount)\b", re.IGNORECASE)
@@ -173,6 +175,35 @@ def merge_candidates(signals, extractions, top_n):
     return candidates[:top_n]
 
 
+def attach_registry_evidence(candidates, settings, progress=lambda msg, frac: None):
+    """The fifth source: look every technology up in the package registries (npm, PyPI, Maven Central, Docker Hub) and add what
+    was found to its evidence, where the Package registries agent reads it. `mentions` and `sources` stay as they are: a
+    download count is not a mention, so Adopt still needs 3+ mentions from 2+ sources. Returns the warnings."""
+
+    def lookup(c):
+        name = f"packages {c['key']}"
+        cached = _cache_get(name, settings) if settings.get("use_cache", True) else None
+        if cached is not None:
+            return cached, []
+        errors = []
+        try:
+            records = registry_service.lookup_registries(c["name"], c["key"], c.get("own_repos"), PACKAGE_MAP.get(c["key"]),
+                                                         errors)
+        except Exception as error:   # a surprise in one lookup must not stop the scan
+            return [], [f"{c['name']}: {error}"]
+        if not errors:   # a partial answer would otherwise be reused for an hour
+            _cache_put(name, settings, records)
+        return records, errors
+
+    warnings = []
+    with ThreadPoolExecutor(max_workers=REGISTRY_WORKERS) as pool:   # many small requests: several technologies at once
+        for i, (c, (records, errors)) in enumerate(zip(candidates, pool.map(lookup, candidates)), start=1):
+            progress(f"Package registries: looked up {c['name']} ({i}/{len(candidates)})...", i / len(candidates))
+            c["evidence"] += records
+            warnings += errors
+    return list(dict.fromkeys(f"Package registries: {w}" for w in warnings))   # one line per distinct problem
+
+
 def apply_rules(candidate, answer):
     """Checks in code what the prompt asks, so a small model cannot break the rules."""
     ring = answer.get("ring") if answer.get("ring") in RINGS else "Assess"
@@ -213,6 +244,8 @@ def run_scan(settings, llm, progress=lambda msg, frac: None, chat_model=None):
             errors.append(f"Extraction {source} batch {i + 1}: {error}")
 
     candidates = merge_candidates(signals, extractions, settings["top_n"])
+    if REGISTRY_SOURCE in settings["sources"]:   # the fifth source needs the technologies, so it runs after the merge
+        errors += attach_registry_evidence(candidates, settings, lambda m, f: progress(m, 0.6 + 0.05 * f))
 
     seeds = {tech_key(x["name"]): x for x in SEED_RADAR}
     # Rating: per technology, one agent per source runs in parallel, then a skeptic and a judge (services/radar_graph.py).
@@ -222,9 +255,9 @@ def run_scan(settings, llm, progress=lambda msg, frac: None, chat_model=None):
     def rated(i, c):
         finished.append(c)
         progress(f"LLM agents: rated {c['name']} ({len(finished)}/{len(candidates)})...",
-                 0.6 + 0.4 * len(finished) / max(len(candidates), 1))
+                 0.65 + 0.35 * len(finished) / max(len(candidates), 1))
 
-    progress(f"LLM agents: rating {len(candidates)} technologies (4 source agents, a skeptic and a judge each)...", 0.6)
+    progress(f"LLM agents: rating {len(candidates)} technologies (up to 5 source agents, a skeptic and a judge each)...", 0.65)
     results = asyncio.run(radar_graph.rate_all(graph, candidates, rated))
 
     technologies = []
