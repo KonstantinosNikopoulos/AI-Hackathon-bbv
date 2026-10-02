@@ -136,17 +136,15 @@ assert done == ["Bar", "Old", "Mid"] and len(model.seen) == 3, "one call per tec
 assert model.seen[0][0] == ai_service.classify_system() and model.seen[0][1] == ai_service.classify_message(cands[0]), "the single prompt, as the app sends it"
 # no rule touches these: Bar is 8 years old with 50,000 stars, Mid has no repository and no evidence, and its Adopt stands
 assert [(o["name"], o["predicted"], o["llm_ring"]) for o in outcomes] == [("Bar", "Adopt", "Adopt"), ("Old", "Hold", "Hold"), ("Mid", "Adopt", "Adopt")], outcomes
-assert outcomes[0]["standing"] == "widespread" and outcomes[2]["standing"] == "unknown" and outcomes[1]["lanes"] == []
-assert outcomes[0]["notes"] == [] and outcomes[2]["notes"] == []
+assert outcomes[1]["lanes"] == [] and outcomes[0]["notes"] == [] and outcomes[2]["notes"] == []
 outcomes.append(rg.outcome(gold[0], cands[0], RuntimeError("model down")))
 assert outcomes[-1]["predicted"] is None and "model down" in outcomes[-1]["error"]
 summary = rg.summarize(outcomes)
 assert (summary["items"], summary["failed"], summary["exact"], summary["within_one"]) == (4, 1, 2, 3), summary
 assert summary["by_ring"]["Adopt"] == [1, 2] and summary["matrix"]["Trial"]["Adopt"] == 1 and summary["by_basis"]["lifecycle"] == [1, 1]
-assert summary["by_standing"] == {"unknown": [1, 2], "widespread": [1, 2]}, summary["by_standing"]
 meta = {"model": "fake:1b", "host": "x", "mode": "classic", "seconds": 8.0}
 text = rg.format_report(meta, outcomes, summary)
-assert "exact ring: 2/4 = 50%" in text and "MISS Mid" in text and "FAIL Bar" in text and "ok   Bar" in text and "within one ring: 3/4" in text and "widespread 1/2" in text
+assert "exact ring: 2/4 = 50%" in text and "MISS Mid" in text and "FAIL Bar" in text and "ok   Bar" in text and "within one ring: 3/4" in text
 folder = os.path.join(tmp, "results")
 stem = rg.save_result(meta, outcomes, summary, folder)
 assert sorted(os.listdir(folder)) == [os.path.basename(stem) + ".json", os.path.basename(stem) + ".txt"]
@@ -164,26 +162,17 @@ failed = rg.rate_all(cands[:1], broken)
 assert isinstance(failed[0], RuntimeError) and rg.outcome(gold[0], cands[0], failed[0])["predicted"] is None
 print("OK rating: the single prompt and the rules, failures counted, report, saved results and the side by side comparison")
 
-# rescoring: the SAME model answers, the CURRENT rules (a change of the rules is measured without asking the model again)
+# the rules are in the prompt: the harness shows the model the facts (an archived repository) and keeps its ring as it is
 small = {"evidence": [{"source": "GitHub", "title": "foo/small", "url": "https://github.com/foo/small", "text": "t", "date": "2016-01-01",
                        "meta": {"name": "small", "full_name": "foo/small", "stars": 300, "created_at": "2016-01-01", "pushed_at": NOW.isoformat(),
                                 "license": "MIT", "archived": True, "forks": 1, "open_issues": 1}}], "own_repos": ["https://github.com/foo/small"], "errors": []}
-json.dump(small, open(os.path.join(tmp, "small.json"), "w", encoding="utf-8"))
 small_item = dict(ITEM, name="Small", key="small", ring="Hold", basis="lifecycle", repo=None)
-small_answer = rg.rate_all([rg.build_candidate(small_item, small)], FakeModel(adopt={"Small"}))
+small_model = FakeModel(adopt={"Small"})
+small_answer = rg.rate_all([rg.build_candidate(small_item, small)], small_model)
 small_outcome = rg.outcome(small_item, rg.build_candidate(small_item, small), small_answer[0])
-assert small_outcome["llm_ring"] == "Adopt" and small_outcome["predicted"] == "Hold" and small_outcome["standing"] == "emerging"
-assert small_outcome["notes"] == ["Adopt → Hold: the repository foo/small is archived"], "an archived repository is a fact: Hold"
-saved = {"meta": {"model": "m", "mode": "classic"},
-         "outcomes": [{"name": "Small", "expected": "Hold", "basis": "lifecycle", "lanes": [], "predicted": "Adopt", "llm_ring": "Adopt"},
-                      {"name": "Bar", "expected": "Adopt", "basis": "ubiquity", "lanes": [], "predicted": "Adopt", "llm_ring": "Adopt"},
-                      {"name": "Down", "expected": "Hold", "basis": "lifecycle", "lanes": [], "predicted": None, "error": "RuntimeError: x"}]}
-again = rg.rescore(saved, [small_item, dict(good, name="Bar"), dict(ITEM, name="Down", key="down")], directory=tmp)
-assert [(o["name"], o["predicted"]) for o in again] == [("Small", "Hold"), ("Bar", "Adopt"), ("Down", None)], again
-assert again[0]["llm_ring"] == "Adopt" and "is archived" in again[0]["notes"][0] and again[1]["notes"] == []
-assert again[2] == saved["outcomes"][2], "a failed call stays failed"
-
-print("OK rescoring with the current rules: the model is not asked again, a failed call stays failed")
+assert "ARCHIVED (read-only: nobody maintains it)." in small_model.seen[0][1], "the facts the rules need are in the message the model reads"
+assert small_outcome["llm_ring"] == "Adopt" and small_outcome["predicted"] == "Adopt" and small_outcome["notes"] == [], "no code overrules the model"
+print("OK the harness rates exactly as the app does: the prompt holds the rules, the facts are in the message")
 
 # ------------------------------------------------------------------ verifying the labels against live sources (faked here)
 def verify_get(url, params=None, headers=None, timeout=None):

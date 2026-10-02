@@ -38,14 +38,14 @@ def swatch(quadrant):
 PROMPT_LABELS = {
     "GitHub": "github", "Y Combinator": "ycombinator", "Hacker News": "hackernews", "RSS feeds": "rss",
     "Shared rules (added to every source prompt)": "_rules",
-    "Rating prompt (one call per technology: proposes the ring from all its evidence)": "classify",
+    "Rating prompt (one call per technology: all the rules are in it)": "classify",
 }
 
 
 def prompt_editor(signals):
     st.write("Each source has its own **extraction prompt**, tuned to how that source works. The shared rules are "
              "added to every source prompt. Rating is ONE prompt per technology: it reads all the evidence and proposes the ring, "
-             "then rules in code check the facts. Saved changes apply to the next scan.")
+             "and holds the rules (what is Hold, what is too new, when a technology is Adopt). Saved changes apply to the next scan.")
     choice = st.selectbox("Prompt", list(PROMPT_LABELS), key="prompt_choice")
     name = PROMPT_LABELS[choice]
     text = st.text_area("Prompt text", ai_service.load_prompt(name), height=360, key=f"prompt_text_{name}")
@@ -156,8 +156,9 @@ if not result:
 3. **Extract**: the LLM names the technologies the signals are about.
 4. **Merge and rank**: the same technology from several sources counts more.
 5. **Rate**: one prompt per technology reads all its evidence (including real npm, PyPI, Maven Central and Docker Hub
-   download numbers) and proposes a ring; rules in code check the facts (an archived repo or an unusable license is *Hold*,
-   a project under 6 months old is at most *Assess*; nothing else stops a well-known technology from being *Adopt*).
+   download numbers) and the facts measured by code (age, stars, license, archived), and gives the ring. The rules are inside the
+   prompt: an archived repo or an unusable license is *Hold*, a project under 6 months old is at most *Assess*, and a well-known
+   standard is *Adopt*. No code changes the ring afterwards.
 """)
     with st.expander("🧠 Prompts"):
         prompt_editor([])
@@ -311,8 +312,6 @@ with tab_details:
                     st.write(f"**For bbv:** {t['business_value']}")
                 st.write(f"**Confidence:** {t['confidence']} · **Mentions:** {t['mentions']} from "
                          f"{len(t['sources'])} source(s)")
-                if t.get("standing"):
-                    st.caption(f"Standing: {t['standing']}")
                 for note in t.get("rule_notes", []):
                     st.caption(f"Rule applied: {note}")
                 if t.get("scorecards"):

@@ -49,7 +49,7 @@ def repo_signal(repo):
             "language": repo.get("language"),
             "topics": repo.get("topics", []),
             "created_at": (repo.get("created_at") or "")[:10],
-            # Already in the search response; used by the rules (radar_record). "none" = no license at all.
+            # Already in the search response; shown to the rating prompt as facts (radar_record). "none" = no license at all.
             "pushed_at": (repo.get("pushed_at") or "")[:10],
             "forks": repo.get("forks_count", 0),
             "open_issues": repo.get("open_issues_count", 0),

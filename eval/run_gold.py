@@ -10,7 +10,6 @@ again with another model and compare.
     python eval/run_gold.py --evidence-only                                     only collect and show what each source has
     python eval/run_gold.py --verify                                            re-check that the gold labels are still true
     python eval/run_gold.py --compare                                           side by side: every saved result
-    python eval/run_gold.py --rescore data/eval/results/<file>.json             the same model answers, the current rules: free
     python eval/run_gold.py --gold eval/heldout_radar.json                      the held-out list (technologies the rules were not designed on)
     --rules v2                                                                  label a run, so a later --compare keeps it apart
 """
@@ -30,7 +29,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import config  # noqa: E402
-from services import ai_service, github_service, pipeline, radar_record, registry_service, rss_service  # noqa: E402
+from services import ai_service, github_service, pipeline, registry_service, rss_service  # noqa: E402
 
 GOLD = os.path.join(ROOT, "eval", "gold_radar.json")
 EVAL_DIR = os.getenv("RADAR_EVAL_DIR") or os.path.join(ROOT, "data", "eval")   # data/ is git-ignored: evidence and results stay on this machine
@@ -182,8 +181,7 @@ def rate_all(candidates, llm, on_done=lambda i, c: None):
 
 
 def outcome(item, candidate, answer):
-    base = {"name": item["name"], "expected": item["ring"], "basis": item["basis"], "lanes": lanes_with_data(candidate),
-            "standing": radar_record.build_record(candidate)["standing"]}
+    base = {"name": item["name"], "expected": item["ring"], "basis": item["basis"], "lanes": lanes_with_data(candidate)}
     if isinstance(answer, BaseException):
         return {**base, "predicted": None, "error": f"{type(answer).__name__}: {answer}"}
     ring, _, notes = pipeline.apply_rules(candidate, answer)
@@ -199,8 +197,6 @@ def summarize(outcomes):
                         for r in RINGS},
             "by_basis": {b: [sum(1 for o in done if o["basis"] == b and o["predicted"] == o["expected"]), sum(1 for o in outcomes if o["basis"] == b)]
                          for b in sorted({o["basis"] for o in outcomes})},
-            "by_standing": {st: [sum(1 for o in done if o.get("standing", "?") == st and o["predicted"] == o["expected"]),
-                                 sum(1 for o in outcomes if o.get("standing", "?") == st)] for st in sorted({o.get("standing", "?") for o in outcomes})},
             "matrix": {e: {p: sum(1 for o in done if o["expected"] == e and o["predicted"] == p) for p in RINGS} for e in RINGS}}
 
 
@@ -212,7 +208,6 @@ def format_report(meta, outcomes, summary):
              f"{summary['within_one'] / max(n, 1):.0%} | failed calls: {summary['failed']}",
              "right per gold ring: " + ", ".join(f"{r} {a}/{b}" for r, (a, b) in summary["by_ring"].items() if b),
              "right per basis:     " + ", ".join(f"{k} {a}/{b}" for k, (a, b) in summary["by_basis"].items()),
-             "right per standing:  " + ", ".join(f"{k} {a}/{b}" for k, (a, b) in summary.get("by_standing", {}).items() if k != "?"),
              "", "confusion matrix (rows = gold ring, columns = predicted)", "            " + "".join(f"{r:>8}" for r in RINGS)]
     lines += [f"  {e:<9} " + "".join(f"{summary['matrix'][e][p]:>8}" for p in RINGS) for e in RINGS]
     lines += ["", "technology                  gold     predicted  lanes with data"]
@@ -263,22 +258,6 @@ def compare(directory=None, gold=None):
     rows.append(f"{'exact ring':<32}" + "".join(f"{newest[k]['summary']['exact']}/{newest[k]['summary']['items']:<20}" for k in keys))
     rows.append(f"{'seconds per technology':<32}" + "".join(f"{newest[k]['meta']['seconds'] / max(newest[k]['summary']['items'], 1):<22.1f}" for k in keys))
     return "\n".join(rows)
-
-
-def rescore(result, items, directory=None):
-    """A saved result with the CURRENT rules (pipeline.apply_rules) applied to the ring the model gave: the model is not asked again,
-    so a change of the rules is measured on exactly the same answers."""
-    by_name = {i["name"]: i for i in items}
-    outcomes = []
-    for o in result["outcomes"]:
-        item = by_name[o["name"]]
-        candidate = build_candidate(item, collect_evidence(item, directory=directory))
-        if not o.get("predicted"):
-            outcomes.append(o)
-            continue
-        ring, _, notes = pipeline.apply_rules(candidate, {"ring": o["llm_ring"]})
-        outcomes.append({**o, "predicted": ring, "notes": notes, "lanes": lanes_with_data(candidate)})
-    return outcomes
 
 
 # ------------------------------------------------------------------ are the gold labels still true?
@@ -351,7 +330,6 @@ def main(argv=None):
     ap.add_argument("--verify", action="store_true")
     ap.add_argument("--compare", action="store_true")
     ap.add_argument("--rules", default="", help="a label for this run (e.g. v2), kept in the file name and shown by --compare")
-    ap.add_argument("--rescore", metavar="RESULT.json", help="apply the current rules to the answers of a saved result, without the model")
     args = ap.parse_args(argv)
 
     gold = re.sub(r"_radar\.json$", "", os.path.basename(args.gold))   # "gold", "heldout"
@@ -360,14 +338,6 @@ def main(argv=None):
         return 0
     items = load_gold(args.gold, rings=args.rings.split(",") if args.rings else None,
                       names={n.strip().lower() for n in args.names.split(",")} if args.names else None, limit=args.limit)
-    if args.rescore:
-        result = json.load(open(args.rescore, encoding="utf-8"))
-        outcomes = rescore(result, load_gold(args.gold))
-        summary = summarize(outcomes)
-        meta = {**result["meta"], "rules": args.rules or "rescored", "rescored_from": os.path.basename(args.rescore)}
-        print(format_report(meta, outcomes, summary))
-        print("\nsaved:", save_result(meta, outcomes, summary) + ".json / .txt")
-        return 0
     if args.verify:
         results = verify_labels(items)
         for name, status, detail in results:

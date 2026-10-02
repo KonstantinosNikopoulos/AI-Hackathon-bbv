@@ -11,7 +11,7 @@ A name is not proof (npm has a package called "go"), so a package is only return
   official  a Docker official image (library/<name>)
   owner     a Docker image of that name under the owner of the technology's GitHub repository
 Everything comes back as evidence items (source "Package registries"): the rating prompt reads them as dated lines
-(ai_service.evidence_lines) and radar_record uses them for the standing. A package the registry does not know is not an error; a registry that fails adds a warning to `errors`."""
+(ai_service.evidence_lines) which is how the prompt sees download numbers. A package the registry does not know is not an error; a registry that fails adds a warning to `errors`."""
 import re
 import threading
 import time

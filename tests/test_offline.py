@@ -186,9 +186,7 @@ techs = {t["name"]: t for t in result["technologies"]}
 print("TECHNOLOGIES:", *[f"  {t['name']}: {t['ring']} ({t['quadrant']}) mentions={t['mentions']} notes={t['rule_notes']}"
                          for t in result["technologies"]], sep="\n")
 assert "AI" not in techs, "generic word should be dropped"
-assert techs["ty"]["ring"] == "Assess" and techs["ty"]["llm_ring"] == "Adopt", "a repository only 40 days old: at most Assess"
-assert techs["ty"]["rule_notes"] == ["Adopt → Assess: first seen only 40 days ago, nothing is proven yet"], techs["ty"]["rule_notes"]
-for name in ("OpenTelemetry", "MCP", "Blazor"):   # the signals of this week show nothing about their age: no rule stands in the way of ADOPT
+for name in ("ty", "OpenTelemetry", "MCP", "Blazor"):   # the rules are in the prompt: no code changes the model's ring (the fake model says Adopt)
     assert techs[name]["ring"] == "Adopt" and techs[name]["llm_ring"] == "Adopt" and techs[name]["rule_notes"] == [], name
 assert techs["Kubernetes"]["ring"] == "Hold" and techs["Kubernetes"]["mentions"] == 1, "model ring used as is"
 assert set(techs) == {"OpenTelemetry", "MCP", "ty", "Kubernetes", "Blazor"}, "only technologies found in the signals"
@@ -210,8 +208,11 @@ assert [t for t, _, _ in llm.rated].count("ty") == 1 and sorted(t for t, _, _ in
 assert all(system == ai_service.classify_system() for _, system, _ in llm.rated), "the prompt of prompts/classify.md"
 ty_user = next(u for t, _, u in llm.rated if t == "ty")
 assert "Package registries: PyPI: ty - 180,000 downloads in the last 30 days" in ty_user and "astral-sh/ty" in ty_user, ty_user
-assert not any("scorecards" in t or "risk_memo" in t for t in result["technologies"]), "no agents: one prompt and the rules in code"
-assert techs["ty"]["standing"] == "new" and techs["Kubernetes"]["standing"] == "unknown" and techs["OpenTelemetry"]["standing"] == "unknown"
+assert not any("scorecards" in t or "risk_memo" in t for t in result["technologies"]), "no agents: one prompt holds the rules"
+# the facts the rules need are in the message: the age of the technology's own repository (40 days for ty), after the evidence
+assert ty_user.index("Evidence:") < ty_user.index("Facts measured by code (true):") and "astral-sh/ty: 4.2k stars" in ty_user and "(40 days ago)" in ty_user, ty_user
+kubernetes_user = next(u for t, _, u in llm.rated if t == "Kubernetes")
+assert "No GitHub repository of its own was found for it" in kubernetes_user, kubernetes_user
 
 # package registries, the fifth source: looked up per technology, only what can be tied to it, and never an extra "mention"
 registry = lambda t: [e for e in t["evidence"] if e["source"] == config.REGISTRY_SOURCE]  # noqa: E731

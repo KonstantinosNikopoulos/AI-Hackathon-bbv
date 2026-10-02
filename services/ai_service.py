@@ -9,6 +9,7 @@ import os
 import ollama
 
 from config import BBV_CONTEXT, OLLAMA_NUM_THREAD, QUADRANTS, RINGS
+from services import radar_record
 
 PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
 
@@ -180,6 +181,7 @@ def classify_message(candidate):
         lines.append(f"Its GitHub repository was created {candidate['youngest_repo_days']} days ago.")
     lines.append("Evidence:")
     lines += evidence_lines(candidate)
+    lines += ["Facts measured by code (true):", radar_record.format_facts(candidate)]
     return "\n".join(lines)
 
 
