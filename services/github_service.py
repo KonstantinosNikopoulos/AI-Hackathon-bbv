@@ -40,6 +40,8 @@ def get_trending_repositories(limit=5, technology_area="AI / LLM", days=90, min_
             "date": (repo.get("created_at") or "")[:10],
             "meta": {
                 "name": repo["name"],
+                "full_name": repo["full_name"],
+                "description": repo.get("description") or "",
                 "stars": repo["stargazers_count"],
                 "language": repo.get("language"),
                 "topics": repo.get("topics", []),

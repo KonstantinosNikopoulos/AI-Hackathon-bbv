@@ -2,25 +2,69 @@
 1. extract_technologies: which technologies do these signals talk about?
 2. classify_technology: which ring should one technology get, and why?
 Both force the answer into a JSON schema, so the model cannot invent other ring names."""
+import hashlib
 import json
+import os
 
 import ollama
 
 from config import BBV_CONTEXT, QUADRANTS, RINGS
 
-EXTRACT_SYSTEM = """You extract technologies from tech news for a technology radar.
-A technology is a named tool, platform, framework, language, library, standard or engineering technique, for example "Kubernetes", "Rust", "OpenTelemetry", "Retrieval-augmented generation" or "Trunk-based development".
-NOT technologies: companies, startups, people, events, consumer products, funding or business news, and generic words such as "AI", "cloud", "security" or "open source".
-A GitHub repository counts as a technology when it is itself a tool, library or framework; use its project name.
-For a startup, list only the technologies it is built on or builds for, if the text names them; otherwise skip it.
-Rules:
-- Only list a technology if it is a main subject of the item.
-- Use the most common official name, without version numbers.
-- Pick one quadrant: Techniques, Tools, Platforms, or Languages & Frameworks.
-- "what" is one short sentence saying what it is.
-- "items" lists the numbers of the news items that mention it.
-- Items without a technology are skipped. An empty list is a valid answer.
-Answer only with JSON that matches the schema."""
+PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
+
+# One extraction prompt per source (prompts/<file>.md) + shared rules (prompts/_rules.md).
+SOURCE_PROMPTS = {"GitHub": "github", "Y Combinator": "ycombinator", "Hacker News": "hackernews", "RSS feeds": "rss"}
+
+
+def prompt_path(name):
+    return os.path.join(PROMPT_DIR, f"{name}.md")
+
+
+def load_prompt(name):
+    """Read on every call, so edits in the Prompts tab (or in the file) apply to the next scan."""
+    with open(prompt_path(name), encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def save_prompt(name, text):
+    with open(prompt_path(name), "w", encoding="utf-8") as f:
+        f.write(text.strip() + "\n")
+
+
+def prompt_versions():
+    """Short fingerprint of every prompt, stored with each run so runs can be compared."""
+    names = list(SOURCE_PROMPTS.values()) + ["_rules", "classify"]
+    return {n: hashlib.md5(load_prompt(n).encode()).hexdigest()[:8] for n in names}
+
+
+def extraction_system(source):
+    return load_prompt(SOURCE_PROMPTS.get(source, "rss")) + "\n\n" + load_prompt("_rules")
+
+
+def classify_system():
+    return load_prompt("classify").replace("{bbv_context}", BBV_CONTEXT)
+
+
+def _meta(s, key, default=""):
+    return (s.get("meta") or {}).get(key, default) or default
+
+
+# How each source's items are shown to the model: only the fields that matter for that source.
+def format_item(s):
+    source = s["source"]
+    if source == "GitHub":
+        topics = ", ".join(_meta(s, "topics", [])[:6]) or "none"
+        return (f"[{s['n']}] repo {_meta(s, 'full_name', s['title'])} | language: {_meta(s, 'language', 'unknown')} | "
+                f"{_meta(s, 'stars', '?')} stars | created {_meta(s, 'created_at', '?')} | topics: {topics} | "
+                f"description: {_meta(s, 'description', s['text'])}")
+    if source == "Y Combinator":
+        return (f"[{s['n']}] startup {_meta(s, 'company', s['title'])} (batch {_meta(s, 'batch', '?')}) | "
+                f"tags: {', '.join(_meta(s, 'tags', [])) or 'none'} | {_meta(s, 'one_liner', s['text'])}")
+    if source == "Hacker News":
+        return (f"[{s['n']}] story \"{s['title']}\" | {_meta(s, 'points', 0)} points, {_meta(s, 'comments', 0)} comments | "
+                f"link: {_meta(s, 'domain', 'news.ycombinator.com')}")
+    return f"[{s['n']}] article on {s.get('group', 'a blog')}: \"{s['title']}\" | {s['text']}"
+
 
 EXTRACT_SCHEMA = {
     "type": "object",
@@ -41,26 +85,6 @@ EXTRACT_SCHEMA = {
     },
     "required": ["technologies"],
 }
-
-CLASSIFY_SYSTEM = f"""You help bbv's engineers maintain a technology radar.
-About bbv: {BBV_CONTEXT}
-
-Rings:
-- Adopt: mature, widely used in production, low risk. Our default choice.
-- Trial: ready to use on a real project that can handle some risk.
-- Assess: promising. Worth a spike or proof of concept to understand the impact.
-- Hold: hyped, immature, risky or replaced by something better. Proceed with caution.
-
-Rules:
-- Judge only from the evidence given. Do not invent facts, numbers or users.
-- You have no information about bbv's own experience, so propose Adopt only if the evidence clearly shows broad, mature production use.
-- A project created in the last few months cannot be Adopt or Trial: at most Assess.
-- If the evidence is thin, choose Assess with low confidence.
-- "summary": one sentence on what it is.
-- "reason": at most 2 sentences, based on the evidence.
-- "business_value": 1 sentence on which bbv customers or services it could matter for.
-- "relevance": how relevant it is for bbv: HIGH, MEDIUM or LOW.
-Answer only with JSON that matches the schema."""
 
 CLASSIFY_SCHEMA = {
     "type": "object",
@@ -111,12 +135,11 @@ class LLM:
         return json.loads(content)
 
 
-def extract_technologies(llm, signals):
-    """signals: list of dicts with a running number 'n'. Returns the model's technologies list."""
-    user = "News items:\n" + "\n".join(
-        f"[{s['n']}] {s['title']} - {s['text']} (source: {s['source']})" for s in signals
-    )
-    result = llm.chat_json(EXTRACT_SYSTEM, user, EXTRACT_SCHEMA)
+def extract_technologies(llm, signals, source=None):
+    """signals: items of ONE source, each with a running number 'n'. Uses that source's prompt."""
+    source = source or signals[0]["source"]
+    user = f"Items from {source}:\n" + "\n".join(format_item(s) for s in signals)
+    result = llm.chat_json(extraction_system(source), user, EXTRACT_SCHEMA)
     return result.get("technologies", [])
 
 
@@ -132,7 +155,7 @@ def classify_technology(llm, candidate):
         lines.append(f"Its GitHub repository was created {candidate['youngest_repo_days']} days ago.")
     lines.append("Evidence:")
     lines += [f"- {e.get('date') or 'n/a'} {e['source']}: {e['title']} - {e['text']}" for e in candidate["evidence"]]
-    return llm.chat_json(CLASSIFY_SYSTEM, "\n".join(lines), CLASSIFY_SCHEMA)
+    return llm.chat_json(classify_system(), "\n".join(lines), CLASSIFY_SCHEMA)
 
 
 def analyze_technology(tech, host="http://localhost:11434", model="llama3.2:3b"):

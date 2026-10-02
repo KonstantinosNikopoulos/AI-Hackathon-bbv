@@ -21,6 +21,8 @@ config.DATA_DIR = tempfile.mkdtemp()
 from services import export, pipeline, radar_chart, rss_service, storage  # noqa: E402
 from services import github_service, hn_service, yc_service  # noqa: E402
 
+pipeline.CACHE_DIR = os.path.join(config.DATA_DIR, "cache")
+
 now = datetime.now(timezone.utc)
 ago = lambda d: now - timedelta(days=d)  # noqa: E731
 
@@ -29,6 +31,8 @@ RSS = f"""<?xml version="1.0"?><rss version="2.0"><channel><title>InfoQ</title>
 <pubDate>{format_datetime(ago(2))}</pubDate><description>&lt;p&gt;OpenTelemetry adds profiling.&lt;/p&gt;</description></item>
 <item><title>Startup raises $40M for observability</title><link>https://www.infoq.com/news/money</link>
 <pubDate>{format_datetime(ago(1))}</pubDate><description>money</description></item>
+<item><title>Kubernetes 1.40 adds in-place pod resize</title><link>https://www.infoq.com/news/k8s/</link>
+<pubDate>{format_datetime(ago(4))}</pubDate><description>Kubernetes release.</description></item>
 <item><title>Old news</title><link>https://www.infoq.com/news/old</link><pubDate>{format_datetime(ago(90))}</pubDate></item>
 </channel></rss>"""
 ATOM = f"""<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Fowler</title>
@@ -90,19 +94,22 @@ class FakeLLM:
 
     def __init__(self):
         self.calls = 0
+        self.batches = []
 
     def chat_json(self, system, user, schema):
         self.calls += 1
-        if "News items" in user:
+        if user.startswith("Items from"):
+            self.batches.append((user.splitlines()[0], system.splitlines()[0], user))
             techs = []
             for name, quadrant, pattern in [("OpenTelemetry", "Tools", "opentelemetry"),
                                             ("MCP", "Techniques", "model context protocol"),
-                                            ("ty", "Tools", "type checker"), ("AI", "Techniques", "")]:
+                                            ("ty", "Tools", "type checker"), ("Kubernetes", "Platforms", "kubernetes"),
+                                            ("AI", "Techniques", "")]:
                 ids = [int(line[1:line.index("]")]) for line in user.splitlines()[1:] if pattern in line.lower()]
                 if ids:
                     techs.append({"name": name, "quadrant": quadrant, "what": f"{name} is a thing", "items": ids})
             return {"technologies": techs}
-        ring = "Adopt" if "Technology: ty" in user or "Technology: OpenTelemetry" in user else "Assess"
+        ring = "Adopt" if "Technology: ty" in user or "Technology: OpenTelemetry" in user else "Hold" if "Kubernetes" in user else "Assess"
         return {"quadrant": "Tools", "ring": ring, "summary": "s", "reason": "Because of <evidence>.",
                 "business_value": "IoT & medtech", "relevance": "HIGH", "confidence": "medium"}
 
@@ -120,7 +127,7 @@ print("SIGNALS:", *[f"  {s['n']:>2} [{s['source']}] {s['title']}" for s in resul
 assert not any("raises" in t or "hiring" in t.lower() or "Old news" in t for t in titles), "noise not removed"
 assert titles.count("OpenTelemetry Profiling Reaches Beta") == 1, "duplicate not removed"
 rss_items = rss_service.get_rss_items(["https://feed.infoq.com/"], days=30)
-assert rss_items[0]["text"] == "OpenTelemetry adds profiling." and len(rss_items) == 2, f"RSS parse/clean: {rss_items}"
+assert rss_items[0]["text"] == "OpenTelemetry adds profiling." and len(rss_items) == 3, f"RSS parse/clean: {rss_items}"
 assert rss_items[0]["url"].startswith("https://www.infoq.com/news/otel/")
 assert any("broken.example" in e for e in result["errors"]), "broken feed should be a warning"
 
@@ -130,7 +137,29 @@ print("TECHNOLOGIES:", *[f"  {t['name']}: {t['ring']} ({t['quadrant']}) mentions
 assert "AI" not in techs, "generic word should be dropped"
 assert techs["ty"]["ring"] == "Assess" and techs["ty"]["llm_ring"] == "Adopt", "young repo rule"
 assert techs["OpenTelemetry"]["ring"] == "Trial", "Adopt needs 3+ mentions"
-assert techs["Kubernetes"]["is_seed"], "seed entries added"
+assert techs["Kubernetes"]["is_seed"] and techs["Kubernetes"]["ring"] == "Adopt", "seed ring must win over the model"
+assert techs["Kubernetes"]["mentions"] == 1 and any("Kept bbv" in n for n in techs["Kubernetes"]["rule_notes"])
+assert techs["TypeScript"]["is_seed"] and techs["TypeScript"]["mentions"] == 0, "unmatched seeds still added"
+
+# one prompt per source: every batch holds one source and gets that source's system prompt
+print("BATCHES:", *[f"  {head} -> system starts: {sys_line[:60]}" for head, sys_line, _ in llm.batches], sep="\n")
+expected = {"GitHub": "GitHub repositories", "Y Combinator": "Y Combinator", "Hacker News": "Hacker News", "RSS feeds": "engineering blogs"}
+for head, sys_line, user in llm.batches:
+    source = head.replace("Items from ", "").rstrip(":")
+    assert expected[source] in sys_line, (source, sys_line)
+gh_batch = next(u for h, _, u in llm.batches if "GitHub" in h)
+assert "language: Rust" in gh_batch and "stars" in gh_batch, gh_batch
+hn_batch = next(u for h, _, u in llm.batches if "Hacker News" in h)
+assert "points" in hn_batch and "link: example.com" in hn_batch, hn_batch
+assert set(result["settings"]["prompts"]) == {"github", "ycombinator", "hackernews", "rss", "_rules", "classify"}
+
+# source cache: a second scan with the network down reuses the fetched data
+for module in (github_service, yc_service, hn_service, rss_service):
+    module.requests.get = lambda *a, **k: (_ for _ in ()).throw(Exception("offline"))
+again = pipeline.run_scan(settings, FakeLLM())
+assert len(again["signals"]) == len(result["signals"]) and not again["errors"][1:], again["errors"]
+for module in (github_service, yc_service, hn_service, rss_service):
+    module.requests.get = fake_get
 assert {t["quadrant"] for t in result["technologies"]} == set(config.QUADRANTS), "all quadrants filled"
 assert msgs[-1][0] == 1.0
 

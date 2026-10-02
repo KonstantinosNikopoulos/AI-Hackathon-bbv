@@ -1,6 +1,7 @@
 """Hacker News: popular stories of the last N days (Algolia API, no key needed)."""
 import re
 import time
+from urllib.parse import urlparse
 
 import requests
 
@@ -33,7 +34,8 @@ def get_hn_stories(limit=15, technology_area="All", days=30, min_points=150):
             "url": hit.get("url") or f"https://news.ycombinator.com/item?id={hit.get('objectID')}",
             "text": f"{hit.get('points', 0)} points, {hit.get('num_comments', 0)} comments on Hacker News",
             "date": (hit.get("created_at") or "")[:10],
-            "meta": {"points": hit.get("points", 0)},
+            "meta": {"points": hit.get("points", 0), "comments": hit.get("num_comments", 0),
+                     "domain": urlparse(hit.get("url") or "").netloc.replace("www.", "") or "news.ycombinator.com"},
         })
     stories.sort(key=lambda s: s["meta"]["points"], reverse=True)
     return stories[:limit]

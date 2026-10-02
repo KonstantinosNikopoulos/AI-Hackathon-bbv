@@ -10,7 +10,8 @@ import streamlit.components.v1 as components
 from config import (AREAS, BATCH_SIZE, DEFAULT_DAYS, DEFAULT_MAX_SIGNALS, DEFAULT_MODEL, DEFAULT_OLLAMA_HOST,
                     DEFAULT_TOP_N, QUADRANTS, RINGS, SOURCES, SUGGESTED_MODELS)
 from services import export, pipeline, storage
-from services.ai_service import LLM
+from services import ai_service
+from services.ai_service import LLM, SOURCE_PROMPTS
 from services.radar_chart import QUADRANT_STYLE, radar_html
 
 st.set_page_config(page_title="bbv Technology Radar", page_icon="📡", layout="wide")
@@ -32,6 +33,33 @@ def swatch(quadrant):
     color = QUADRANT_STYLE.get(quadrant, {}).get("light", "#888")
     return (f'<span style="display:inline-block;width:11px;height:11px;border-radius:3px;'
             f'background:{color};margin-right:6px;vertical-align:-1px"></span>')
+
+
+PROMPT_LABELS = {
+    "GitHub": "github", "Y Combinator": "ycombinator", "Hacker News": "hackernews", "RSS feeds": "rss",
+    "Shared rules (added to every source prompt)": "_rules", "Rating prompt (one technology, all sources)": "classify",
+}
+
+
+def prompt_editor(signals):
+    st.write("Each source has its own **extraction prompt**, tuned to how that source works. The shared rules are "
+             "added to every source prompt. The **rating prompt** is shared, because one technology can come from "
+             "several sources. Saved changes apply to the next scan.")
+    choice = st.selectbox("Prompt", list(PROMPT_LABELS), key="prompt_choice")
+    name = PROMPT_LABELS[choice]
+    text = st.text_area("Prompt text", ai_service.load_prompt(name), height=360, key=f"prompt_text_{name}")
+    if st.button("💾 Save prompt", key=f"prompt_save_{name}"):
+        ai_service.save_prompt(name, text)
+        st.success(f"Saved prompts/{name}.md. Run a new scan to use it (tick 'Reuse sources' to keep it fast).")
+    source = next((k for k, v in SOURCE_PROMPTS.items() if v == name), None)
+    sample = [x for x in (signals or []) if x["source"] == source][:BATCH_SIZE]
+    if source and sample:
+        with st.expander("Preview: what the model receives for one batch of this source"):
+            st.caption("System message")
+            st.code(ai_service.extraction_system(source), language="text")
+            st.caption("User message")
+            st.code(f"Items from {source}:\n" + "\n".join(ai_service.format_item(x) for x in sample), language="text")
+    st.caption("The prompts are plain files in the prompts/ folder; `git diff prompts` shows what you changed.")
 
 
 # ------------------------------------------------------------------ state
@@ -61,6 +89,8 @@ with st.sidebar:
     days = st.slider("Look back (days)", 7, 90, DEFAULT_DAYS)
     max_signals = st.slider("Signals sent to the LLM", 8, 80, DEFAULT_MAX_SIGNALS, step=8)
     top_n = st.slider("Technologies to rate", 5, 25, DEFAULT_TOP_N)
+    use_cache = st.checkbox("Reuse sources fetched in the last hour", value=True,
+                            help="Saves time and the GitHub rate limit while you tune prompts. Untick for fresh data.")
     calls = math.ceil(max_signals / BATCH_SIZE) + top_n
     st.caption(f"≈ {calls} LLM calls per scan. On a CPU expect about 10–30 s each.")
     scan = st.button("🔍 Scan & analyze", type="primary", disabled=not sources)
@@ -83,7 +113,7 @@ if scan and model not in installed:
     st.sidebar.error(f"Model {model} is not installed. Run: docker exec -it ollama ollama pull {model}")
     scan = False
 if scan:
-    settings = {"area": area, "sources": sources, "days": days, "max_signals": max_signals,
+    settings = {"area": area, "sources": sources, "days": days, "max_signals": max_signals, "use_cache": use_cache,
                 "top_n": top_n, "model": model, "host": host}
     with st.status("Scanning public sources and asking the local LLM...", expanded=True) as status:
         bar, line = st.progress(0.0), st.empty()
@@ -112,6 +142,8 @@ if not result:
 4. **Merge and rank**: the same technology from several sources counts more.
 5. **Rate**: the LLM proposes a ring with a reason; simple rules check it (e.g. a 3-month-old repo can't be *Adopt*).
 """)
+    with st.expander("🧠 Prompts"):
+        prompt_editor([])
     st.stop()
 
 s = result["settings"]
@@ -151,8 +183,8 @@ shown = [t for t in techs
 
 svg, numbered = radar_html(shown, statuses)
 
-tab_radar, tab_insights, tab_table, tab_details, tab_signals, tab_export = st.tabs(
-    ["📡 Radar", "📊 Insights", "📋 Table", "🔎 Details", "🗂 Signals", "⬇️ Export"])
+tab_radar, tab_insights, tab_table, tab_details, tab_signals, tab_prompts, tab_export = st.tabs(
+    ["📡 Radar", "📊 Insights", "📋 Table", "🔎 Details", "🗂 Signals", "🧠 Prompts", "⬇️ Export"])
 
 # ------------------------------------------------------------------ radar
 with tab_radar:
@@ -265,7 +297,7 @@ with tab_details:
                 st.write(f"**Confidence:** {t['confidence']} · **Mentions:** {t['mentions']} from "
                          f"{len(t['sources'])} source(s)")
                 for note in t.get("rule_notes", []):
-                    st.caption(f"Rule applied: {note} (the LLM said {t.get('llm_ring')})")
+                    st.caption(f"Rule applied: {note}")
                 if t["evidence"]:
                     st.write("**Evidence**")
                     for e in t["evidence"]:
@@ -280,6 +312,10 @@ with tab_signals:
         st.caption(f"{len(sig)} signals sent to the LLM, after removing noise and duplicates.")
         st.dataframe(sig[["n", "source", "title", "date", "url"]].rename(columns={"n": "#"}), hide_index=True,
                      column_config={"url": st.column_config.LinkColumn("Link", display_text="open")})
+
+# ------------------------------------------------------------------ prompts
+with tab_prompts:
+    prompt_editor(result["signals"])
 
 # ------------------------------------------------------------------ export
 with tab_export:

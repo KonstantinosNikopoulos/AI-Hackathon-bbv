@@ -63,6 +63,7 @@ def get_yc_companies(limit=5, technology_area="AI / LLM", companies=None):
             "url": "https://www.ycombinator.com/companies/" + company.get("slug", ""),
             "text": f"{description} | tags: {', '.join((company.get('tags') or [])[:6])}",
             "date": "",
-            "meta": {"batch": company.get("batch"), "location": company.get("all_locations", "")},
+            "meta": {"company": company.get("name", ""), "batch": company.get("batch"), "tags": company.get("tags") or [],
+                     "one_liner": description, "location": company.get("all_locations", "")},
         })
     return results

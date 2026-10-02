@@ -1,8 +1,11 @@
 """The scan: collect signals -> clean -> LLM extracts technologies -> merge and rank -> LLM proposes rings."""
+import json
+import os
 import re
+import time
 from datetime import date, datetime
 
-from config import BATCH_SIZE, QUADRANTS, RINGS, RSS_FEEDS, SEED_RADAR
+from config import BATCH_SIZE, DATA_DIR, QUADRANTS, RINGS, RSS_FEEDS, SEED_RADAR
 from services import ai_service, github_service, hn_service, rss_service, yc_service
 
 NOISE = re.compile(r"\b(raises|funding|series [a-d]|acquires|acquisition|layoffs?|hiring|podcast|webinar|"
@@ -17,6 +20,9 @@ ALIASES = {
 GENERIC = {"ai", "artificial intelligence", "machine learning", "ml", "llm", "llms", "large language models",
            "generative ai", "genai", "cloud", "cloud computing", "security", "cybersecurity", "open source",
            "software", "api", "apis", "data", "devops", "agents", "ai agents", "automation", "web", "app", "apps"}
+
+
+SOURCE_ORDER = ["GitHub", "Y Combinator", "Hacker News", "RSS feeds"]
 
 
 def tech_key(name):
@@ -41,11 +47,44 @@ def collect_signals(settings, progress=lambda msg, frac: None):
     enabled = [s for s in steps if s[0] in sources]
     for i, (name, fetch) in enumerate(enabled):
         progress(f"Collecting from {name}...", i / max(len(enabled), 1))
+        cached = _cache_get(name, settings) if settings.get("use_cache", True) else None
+        if cached is not None:
+            signals.extend(cached)
+            continue
         try:
-            signals.extend(fetch())
+            items = fetch()
+            signals.extend(items)
+            _cache_put(name, settings, items)
         except Exception as error:
             errors.append(f"{name}: {error}")
+            stale = _cache_get(name, settings, max_age=7 * 86400)   # better old data than none
+            if stale:
+                signals.extend(stale)
+                errors.append(f"{name}: used cached data from an earlier fetch")
     return signals, errors
+
+
+CACHE_DIR = os.path.join(os.path.dirname(DATA_DIR), "cache")
+CACHE_TTL = 3600  # seconds: re-running a scan within an hour reuses the fetched sources (saves the GitHub rate limit)
+
+
+def _cache_file(name, settings):
+    key = re.sub(r"[^a-z0-9]+", "-", f"{name}-{settings['area']}-{settings['days']}".lower())
+    return os.path.join(CACHE_DIR, key + ".json")
+
+
+def _cache_get(name, settings, max_age=CACHE_TTL):
+    path = _cache_file(name, settings)
+    if not os.path.exists(path) or time.time() - os.path.getmtime(path) > max_age:
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _cache_put(name, settings, items):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(_cache_file(name, settings), "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False)
 
 
 def select_signals(signals, max_signals):
@@ -135,23 +174,29 @@ def apply_rules(candidate, answer):
 
 def run_scan(settings, llm, progress=lambda msg, frac: None):
     started = datetime.now()
+    settings = dict(settings, prompts=ai_service.prompt_versions())
     raw, errors = collect_signals(settings, lambda m, f: progress(m, 0.15 * f))
     signals = select_signals(raw, settings["max_signals"])
     if not signals:
         return {"run_at": started.isoformat(timespec="seconds"), "settings": settings, "signals": [],
                 "technologies": [], "errors": errors + ["No signals collected."], "stats": {"raw": len(raw)}}
 
-    batches = [signals[i:i + BATCH_SIZE] for i in range(0, len(signals), BATCH_SIZE)]
+    # Batches never mix sources, so each batch gets the prompt written for its source.
+    batches = []
+    for source in [s for s in SOURCE_ORDER if any(x["source"] == s for x in signals)]:
+        items = [x for x in signals if x["source"] == source]
+        batches += [(source, items[i:i + BATCH_SIZE]) for i in range(0, len(items), BATCH_SIZE)]
     extractions = []
-    for i, batch in enumerate(batches):
-        progress(f"LLM: finding technologies in batch {i + 1}/{len(batches)}...", 0.15 + 0.45 * i / len(batches))
+    for i, (source, batch) in enumerate(batches):
+        progress(f"LLM: finding technologies in {source} batch ({i + 1}/{len(batches)})...", 0.15 + 0.45 * i / len(batches))
         try:
-            extractions.append((batch, ai_service.extract_technologies(llm, batch)))
+            extractions.append((batch, ai_service.extract_technologies(llm, batch, source)))
         except Exception as error:
-            errors.append(f"Extraction batch {i + 1}: {error}")
+            errors.append(f"Extraction {source} batch {i + 1}: {error}")
 
     candidates = merge_candidates(signals, extractions, settings["top_n"])
 
+    seeds = {tech_key(x["name"]): x for x in SEED_RADAR}
     technologies = []
     for i, c in enumerate(candidates):
         progress(f"LLM: rating {c['name']} ({i + 1}/{len(candidates)})...", 0.6 + 0.4 * i / max(len(candidates), 1))
@@ -161,12 +206,17 @@ def run_scan(settings, llm, progress=lambda msg, frac: None):
             errors.append(f"Classify {c['name']}: {error}")
             continue
         ring, quadrant, notes = apply_rules(c, answer)
+        seed = seeds.get(c["key"])
+        if seed:  # bbv's own knowledge wins over the model; the evidence is still shown
+            if seed["ring"] != ring:
+                notes.append(f"Kept bbv's ring {seed['ring']} (model proposed {ring})")
+            ring, quadrant = seed["ring"], seed["quadrant"]
         technologies.append({
-            "name": c["name"], "ring": ring, "quadrant": quadrant, "llm_ring": answer.get("ring"),
+            "name": seed["name"] if seed else c["name"], "ring": ring, "quadrant": quadrant, "llm_ring": answer.get("ring"),
             "relevance": answer.get("relevance", "LOW"), "confidence": answer.get("confidence", "low"),
             "summary": answer.get("summary", ""), "reason": answer.get("reason", ""),
             "business_value": answer.get("business_value", ""), "rule_notes": notes,
-            "mentions": c["mentions"], "sources": c["sources"], "evidence": c["evidence"], "is_seed": False,
+            "mentions": c["mentions"], "sources": c["sources"], "evidence": c["evidence"], "is_seed": bool(seed),
         })
 
     proposed = {tech_key(t["name"]) for t in technologies}
