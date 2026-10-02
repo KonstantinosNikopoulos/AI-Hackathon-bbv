@@ -104,6 +104,22 @@ CLASSIFY_SCHEMA = {
 }
 
 
+_THINKING = {}
+
+
+def thinking_setting(host, model):
+    """What to send as `think` so a thinking model answers at once: False, "low" for gpt-oss (it cannot switch thinking off),
+    None for a model that does not think. Ollama knows which models think (qwen3, gemma4, nemotron, lfm2.5-thinking, ...), so
+    ask it; the three names below are only the fallback when it cannot be asked."""
+    if (host, model) not in _THINKING:
+        try:
+            thinks = "thinking" in (ollama.Client(host=host, timeout=10).show(model).capabilities or [])
+        except Exception:
+            thinks = any(x in model for x in ("qwen3", "deepseek-r1", "gpt-oss"))
+        _THINKING[(host, model)] = None if not thinks else "low" if "gpt-oss" in model else False
+    return _THINKING[(host, model)]
+
+
 class LLM:
     def __init__(self, host, model, timeout=600):
         self.host = host
@@ -124,8 +140,9 @@ class LLM:
 
     def chat_json(self, system, user, schema):
         kwargs = {}
-        if any(x in self.model for x in ("qwen3", "deepseek-r1", "gpt-oss")):
-            kwargs["think"] = False  # thinking is very slow on CPU
+        think = thinking_setting(self.host, self.model)
+        if think is not None:
+            kwargs["think"] = think  # thinking is very slow on CPU
         options = {"temperature": 0, "num_ctx": 8192}
         if OLLAMA_NUM_THREAD:
             options["num_thread"] = OLLAMA_NUM_THREAD  # see config.py

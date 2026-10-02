@@ -28,6 +28,7 @@ copy .env.example .env          # optional: add a GitHub token
 python tests\test_offline.py    # checks the logic without internet or Ollama
 python tests\test_graph.py      # checks the rating agents the same way
 python tests\test_registry.py   # checks the package registry lookup (fake answers, no internet)
+python tests\test_gold.py       # checks the gold-set harness (fake answers, no internet)
 streamlit run app.py
 ```
 
@@ -121,6 +122,36 @@ Docker: 0.17 tokens/s with 16 threads, 17.8 tokens/s with 6. Set `OLLAMA_NUM_THR
 in `.env`; it is passed on every call, extraction and rating. Check the speed with `docker logs ollama --tail 20` (look for
 "tokens per second" in the `eval time` line).
 
+## Is the model right? Known technologies with a certain ring
+
+`eval/gold_radar.json` lists 29 technologies whose ring is not a matter of opinion, each with the reason, a source and a `check`
+that can be re-tested against a live source (`python eval/run_gold.py --verify`):
+
+| Gold ring | Why it is certain | Technologies |
+| --- | --- | --- |
+| **Hold** (8) | The vendor or maintainers ended support: an official end-of-life date or an archived repository | Python 2, AngularJS, TSLint, Xamarin.Forms, PhoneGap, Internet Explorer 11, Adobe Flash Player, Microsoft Silverlight |
+| **Adopt** (9) | Universal, measurable and still maintained: Docker pulls in the billions, npm downloads in the hundreds of millions, CNCF *graduated* | Linux, Git, PostgreSQL, Python, Kubernetes, Prometheus, TypeScript, React, Continuous integration |
+| **Trial** (6) | CNCF maturity level *incubating* | Backstage, Thanos, KubeVirt, Strimzi, Longhorn, OpenFeature |
+| **Assess** (6) | CNCF maturity level *sandbox* | Headlamp, Kepler, Inspektor Gadget, Kubewarden, Tinkerbell, Akri |
+
+Hold and Adopt are facts. Trial and Assess can only be certain against a stated rubric, so they use the public CNCF ladder
+(Graduated = Adopt, Incubating = Trial, Sandbox = Assess, Archived = Hold). If bbv has a radar of its own, add its entries to the file
+with `"basis": "bbv"` and test against that instead.
+
+```powershell
+python eval/run_gold.py --model qwen3:4b --host http://localhost:11435   # all 29, with the five source agents, anti-hype and judge
+python eval/run_gold.py --limit 2                                         # 2 per ring: a quick try
+python eval/run_gold.py --mode classic                                    # the old single prompt: what the model itself knows
+python eval/run_gold.py --compare                                         # every saved result side by side, per technology
+```
+
+For each technology it collects **real evidence by name** once (its GitHub repository, Hacker News stories, press articles from The New
+Stack, GitHub, .NET and CNCF blogs, and curated registry data) and saves it in `data/eval/evidence`, so every model is shown exactly
+the same facts. It then rates like the app (agents, then the simple rules) and prints the confusion matrix, the accuracy per ring, which
+lanes had data for every miss, and the rule notes. Results are saved in `data/eval/results`. A miss is not always the model's fault:
+no press evidence means Adopt is impossible (the decision matrix needs a maturity score), and a Hacker News story title can make a
+risk score a "fatal flaw". The table shows both.
+
 ## Prompts: one per source
 
 Each source has its own extraction prompt in `prompts/`, written for how that source works:
@@ -162,6 +193,8 @@ to re-run quickly with a new prompt on the same data.
 | `services/export.py` | Markdown and CSV downloads |
 | `tests/test_offline.py` | End-to-end test with fake sources and a fake LLM |
 | `tests/test_graph.py` | Rating agents: facts, decision matrix, parallelism, errors (no Ollama needed) |
+| `eval/gold_radar.json`, `eval/run_gold.py` | Known technologies with a certain ring, and the harness that tests a model against them |
+| `tests/test_gold.py` | The gold-set harness: collectors, rating, report, label checks (no internet needed) |
 | `tests/test_registry.py` | Registry lookup: curated and verified packages, rate limits, failures (fake answers, no internet) |
 
 ## Ideas for the hackathon day

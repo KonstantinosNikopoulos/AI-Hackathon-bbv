@@ -29,7 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from config import BBV_CONTEXT, GRAPH_LANE_CONCURRENCY, GRAPH_TECH_CONCURRENCY, OLLAMA_NUM_THREAD, RINGS
-from services.ai_service import load_prompt
+from services.ai_service import load_prompt, thinking_setting
 from services.radar_lanes import (CODE_CONFIDENCE_LANES, COMPUTED_NAMES, COMPUTED_SCORES, LANE_SOURCE, LANES, RISK_SCORES,
                                   SCORE_FLOOR, SCORE_MIN, SCORES_BY_LANE, Lane, cap_confidence, clean_scores, lane_facts,
                                   lane_schema)
@@ -434,8 +434,9 @@ def make_chat_model(host, model, timeout=600):
     """The local model. Build one per scan: its async client belongs to the event loop of that scan."""
     from langchain_ollama import ChatOllama   # imported here so tests with a fake model don't need it
     kwargs = {}
-    if any(x in model for x in ("qwen3", "deepseek-r1", "gpt-oss")):
-        kwargs["reasoning"] = False  # thinking is very slow on CPU (same switch as ai_service.LLM)
+    think = thinking_setting(host, model)
+    if think is not None:
+        kwargs["reasoning"] = think  # thinking is very slow on CPU (same switch as ai_service.LLM)
     if OLLAMA_NUM_THREAD:
         kwargs["num_thread"] = OLLAMA_NUM_THREAD  # must match ai_service.LLM, or Ollama reloads the model between calls
     return ChatOllama(model=model, base_url=host, temperature=0, num_ctx=8192,
