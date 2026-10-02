@@ -1,4 +1,4 @@
-"""Facts measured by code about ONE technology, written into the rating prompt (prompts/classify.md) after the evidence.
+"""Facts measured by code about ONE technology, written into the rating prompt (the [RATING] section of prompts/prompt.md) after the evidence.
 
 The rules of the radar are in that prompt, in words: an archived repository or a license that blocks commercial reuse is Hold, a project
 younger than 6 months is at most Assess, and a technology the model knows to be a standard is Adopt. The prompt needs the facts to apply

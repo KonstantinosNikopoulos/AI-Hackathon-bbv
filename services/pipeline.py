@@ -207,7 +207,7 @@ def attach_registry_evidence(candidates, settings, progress=lambda msg, frac: No
 
 
 def apply_rules(candidate, answer):
-    """The rules are in the prompt (prompts/classify.md), not here: this only makes sure the answer is a ring and a quadrant of the radar."""
+    """The rules are in the prompt (the [RATING] section of prompts/prompt.md), not here: this only makes sure the answer is a ring and a quadrant of the radar."""
     ring = answer.get("ring") if answer.get("ring") in RINGS else "Assess"
     quadrant = answer.get("quadrant") if answer.get("quadrant") in QUADRANTS else candidate["quadrant"]
     return ring, quadrant, []
@@ -223,7 +223,7 @@ def run_scan(settings, llm, progress=lambda msg, frac: None):
         return {"run_at": started.isoformat(timespec="seconds"), "settings": settings, "signals": [],
                 "technologies": [], "errors": errors + ["No signals collected."], "stats": {"raw": len(raw)}}
 
-    # Batches never mix sources, so each batch gets the prompt written for its source.
+    # Batches never mix sources; every batch gets the extraction section of the single prompt (prompts/prompt.md).
     batches = []
     for source in [s for s in SOURCE_ORDER if any(x["source"] == s for x in signals)]:
         items = [x for x in signals if x["source"] == source]
@@ -240,7 +240,7 @@ def run_scan(settings, llm, progress=lambda msg, frac: None):
     if REGISTRY_SOURCE in settings["sources"]:   # the fifth source needs the technologies, so it runs after the merge
         errors += attach_registry_evidence(candidates, settings, lambda m, f: progress(m, 0.6 + 0.05 * f))
 
-    # Rating: ONE prompt per technology (prompts/classify.md) reads all its evidence and the facts, and holds the rules.
+    # Rating: ONE prompt per technology (the [RATING] section of prompts/prompt.md) reads all its evidence and the facts, and holds the rules.
     technologies = []
     for i, c in enumerate(candidates):
         progress(f"LLM: rating {c['name']} ({i + 1}/{len(candidates)})...", 0.65 + 0.35 * i / max(len(candidates), 1))

@@ -12,7 +12,7 @@ Improved version of the original app in `C:\hackathon\tech-radar-ai` (that folde
 | Rules | none | Written into the rating prompt: archived repository or unusable license → Hold; younger than 6 months → max Assess; a well-known standard → Adopt (see Rating) |
 | bbv context | generic "consulting company" | bbv services and industries in the prompt (edit in `config.py`) |
 | UI | Four lists | Round radar, KPI row, filters, Insights charts, table, details, signals, export |
-| Prompts | One prompt for everything | One extraction prompt per source, editable in the app |
+| Prompts | One prompt for everything | One prompt for the whole app (`[EXTRACTION]` + `[RATING]` sections), editable in the app |
 | Memory | Results lost on every click | Every scan saved in `data/runs`; app opens the last run; "New / Moved in / Moved out" vs the previous run |
 | Settings | Hard-coded | Sidebar: Ollama address, model, area, sources, days, number of signals and technologies |
 | Export | none | Markdown report, Thoughtworks radar CSV, full JSON |
@@ -44,7 +44,7 @@ A scan makes `signals / 8 + technologies` LLM calls (default about 17: extractio
 
 ## Rating: one prompt per technology, with the rules inside it
 
-Each technology is rated by **one prompt** (`prompts/classify.md`) that reads everything collected about it: every dated evidence
+Each technology is rated by **one prompt** (the `[RATING]` section of `prompts/prompt.md`) that reads everything collected about it: every dated evidence
 line from GitHub, Y Combinator, Hacker News, the RSS feeds and the package registries, and a few **facts measured by code** about
 its own GitHub repository (age in days, stars, last push, license, archived or not), because a model cannot count days or read a
 license id reliably. It answers with the ring, a reason, the value for bbv and a relevance. **The rules are in the prompt, in words**,
@@ -153,24 +153,21 @@ ring, and which sources had data for every miss. Results are saved in `data/eval
 (`--rules v4` labels a run so that `--compare` keeps it apart). GitHub's anonymous limit is 60 requests an hour: put a `GITHUB_TOKEN` in
 `.env` before collecting evidence for a long list.
 
-## Prompts: one per source
+## Prompt: one for the whole app
 
-Each source has its own extraction prompt in `prompts/`, written for how that source works:
+The app uses **one prompt**, `prompts/prompt.md`, edited in the app (**🧠 Prompts** tab) or directly in the file. It has two
+sections, each starting with its marker on a line of its own:
 
-| File | Used for | What it is tuned for |
+| Section | Used for | What it holds |
 | --- | --- | --- |
-| `prompts/github.md` | GitHub batches | The repo usually *is* the technology; skip awesome-lists, tutorials, demos |
-| `prompts/ycombinator.md` | Y Combinator batches | A startup is a company: only name the technology it is built on |
-| `prompts/hackernews.md` | Hacker News batches | Titles only: "Show HN: X" → X; skip opinion and business stories |
-| `prompts/rss.md` | Blog/news batches | Skip vendor marketing names; releases count without version |
-| `prompts/_rules.md` | Added to every source prompt | What counts as a technology, output rules |
-| `prompts/classify.md` | The rating prompt | Rates one technology in one call from all its evidence and the facts measured by code; holds the rules (Hold, too new, Adopt) |
+| `[EXTRACTION]` | Every extraction batch, all sources | What counts as a technology, how to read GitHub, Y Combinator, Hacker News and RSS items, output rules |
+| `[RATING]` | Every rating call (one per technology) | Rates one technology from all its evidence and the facts measured by code; holds the rules (Hold, too new, Adopt). `{bbv_context}` is replaced with the text in `config.py` |
 
-Batches never mix sources, so each batch gets its own prompt. Each source also sends the model only its useful
-fields (GitHub: language, stars, topics, created date; YC: batch, tags; HN: points, comments, link domain; RSS: site, summary).
+Batches never mix sources and the user message names the source ("Items from GitHub:"), so the one extraction section can
+describe every source. Each source also sends the model only its useful fields (GitHub: language, stars, topics, created date;
+YC: batch, tags; HN: points, comments, link domain; RSS: site, summary). The app refuses to save a prompt without both markers.
 
-Edit the prompts in the app (**🧠 Prompts** tab, with a preview of what the model receives) or directly in the files.
-Every run stores a fingerprint of the prompts it used. Tick **Reuse sources fetched in the last hour** in the sidebar
+Every run stores a fingerprint of the prompt it used. Tick **Reuse sources fetched in the last hour** in the sidebar
 to re-run quickly with a new prompt on the same data.
 
 ## Files
@@ -182,7 +179,7 @@ to re-run quickly with a new prompt on the same data.
 | `services/github_service.py`, `yc_service.py`, `hn_service.py`, `rss_service.py` | Collect signals |
 | `services/registry_service.py` | Looks a technology up in npm, PyPI, Maven Central and Docker Hub (the fifth source) |
 | `services/pipeline.py` | Clean → extract technologies → merge and rank → rate → rules |
-| `prompts/*.md` | The LLM prompts (one per source + shared rules + the rating prompt) |
+| `prompts/prompt.md` | The single LLM prompt (`[EXTRACTION]` and `[RATING]` sections) |
 | `services/ai_service.py` | Loads prompts, formats items per source, JSON schemas, Ollama client |
 | `services/radar_record.py` | The facts measured by code that the rating prompt reads: age, stars, last push, license, archived |
 | `services/radar_chart.py` | Draws the radar (SVG, no extra library) |

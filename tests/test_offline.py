@@ -191,21 +191,19 @@ for name in ("ty", "OpenTelemetry", "MCP", "Blazor"):   # the rules are in the p
 assert techs["Kubernetes"]["ring"] == "Hold" and techs["Kubernetes"]["mentions"] == 1, "model ring used as is"
 assert set(techs) == {"OpenTelemetry", "MCP", "ty", "Kubernetes", "Blazor"}, "only technologies found in the signals"
 
-# one prompt per source: every batch holds one source and gets that source's system prompt
+# one prompt for the whole app: every batch holds one source, names it in the user message, and gets the [EXTRACTION] section
 print("BATCHES:", *[f"  {head} -> system starts: {sys_line[:60]}" for head, sys_line, _ in llm.batches], sep="\n")
-expected = {"GitHub": "GitHub repositories", "Y Combinator": "Y Combinator", "Hacker News": "Hacker News", "RSS feeds": "engineering blogs"}
-for head, sys_line, user in llm.batches:
-    source = head.replace("Items from ", "").rstrip(":")
-    assert expected[source] in sys_line, (source, sys_line)
+assert {h.replace("Items from ", "").rstrip(":") for h, _, _ in llm.batches} == {"GitHub", "Y Combinator", "Hacker News", "RSS feeds"}
+assert all(sys_line == ai_service.extraction_system().splitlines()[0] for _, sys_line, _ in llm.batches), "the same prompt for every source"
 gh_batch = next(u for h, _, u in llm.batches if "GitHub" in h)
 assert "language: Rust" in gh_batch and "stars" in gh_batch, gh_batch
 hn_batch = next(u for h, _, u in llm.batches if "Hacker News" in h)
 assert "points" in hn_batch and "link: example.com" in hn_batch, hn_batch
-assert set(result["settings"]["prompts"]) == {"github", "ycombinator", "hackernews", "rss", "_rules", "classify"}
+assert set(result["settings"]["prompts"]) == {"prompt"}
 
 # rating: ONE call per technology with the single prompt, which reads every evidence line (registry numbers included)
 assert [t for t, _, _ in llm.rated].count("ty") == 1 and sorted(t for t, _, _ in llm.rated) == sorted(techs), llm.rated
-assert all(system == ai_service.classify_system() for _, system, _ in llm.rated), "the prompt of prompts/classify.md"
+assert all(system == ai_service.classify_system() for _, system, _ in llm.rated), "the [RATING] section of prompts/prompt.md"
 ty_user = next(u for t, _, u in llm.rated if t == "ty")
 assert "Package registries: PyPI: ty - 180,000 downloads in the last 30 days" in ty_user and "astral-sh/ty" in ty_user, ty_user
 assert not any("scorecards" in t or "risk_memo" in t for t in result["technologies"]), "no agents: one prompt holds the rules"
@@ -323,4 +321,15 @@ assert csv_text.splitlines()[0] == "name,ring,quadrant,isNew,status,description"
 assert "signals from GitHub, Y Combinator, Hacker News, RSS feeds · package registries checked" in md, "registries add no signals"
 open(os.path.join(config.DATA_DIR, "radar_preview.html"), "w").write(svg)
 print("LLM calls:", llm.calls, "| radar preview:", os.path.join(config.DATA_DIR, "radar_preview.html"))
+# the single prompt: both sections are required, and a broken prompt is never saved
+for broken in ("[EXTRACTION]\nfind things", "[RATING]\nrate things", "[EXTRACTION]\n\n[RATING]\nrate", "[EXTRACTION]\na\n[RATING]\nb\n[RATING]\nc"):
+    try:
+        ai_service.split_prompt(broken)
+        raise AssertionError(broken)
+    except ValueError:
+        pass
+assert ai_service.split_prompt("[RATING]\nrate\n[EXTRACTION]\nfind") == {"extraction": "find", "rating": "rate"}
+assert "{bbv_context}" not in ai_service.classify_system() and "Items from GitHub" in ai_service.extraction_system()
+print("OK one prompt for the whole app: [EXTRACTION] for every source, [RATING] for every technology")
+
 print("ALL OFFLINE TESTS PASSED")

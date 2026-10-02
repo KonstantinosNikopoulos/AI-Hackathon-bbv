@@ -11,7 +11,7 @@ from config import (AREAS, BATCH_SIZE, DEFAULT_DAYS, DEFAULT_MAX_SIGNALS, DEFAUL
                     DEFAULT_TOP_N, MAX_DAYS, QUADRANTS, REGISTRY_SOURCE, RINGS, SOURCES, SUGGESTED_MODELS)
 from services import export, pipeline, storage
 from services import ai_service
-from services.ai_service import LLM, SOURCE_PROMPTS
+from services.ai_service import LLM
 from services.radar_chart import QUADRANT_STYLE, radar_html
 
 st.set_page_config(page_title="bbv Technology Radar", page_icon="📡", layout="wide")
@@ -35,32 +35,33 @@ def swatch(quadrant):
             f'background:{color};margin-right:6px;vertical-align:-1px"></span>')
 
 
-PROMPT_LABELS = {
-    "GitHub": "github", "Y Combinator": "ycombinator", "Hacker News": "hackernews", "RSS feeds": "rss",
-    "Shared rules (added to every source prompt)": "_rules",
-    "Rating prompt (one call per technology: all the rules are in it)": "classify",
-}
-
-
 def prompt_editor(signals):
-    st.write("Each source has its own **extraction prompt**, tuned to how that source works. The shared rules are "
-             "added to every source prompt. Rating is ONE prompt per technology: it reads all the evidence and proposes the ring, "
-             "and holds the rules (what is Hold, what is too new, when a technology is Adopt). Saved changes apply to the next scan.")
-    choice = st.selectbox("Prompt", list(PROMPT_LABELS), key="prompt_choice")
-    name = PROMPT_LABELS[choice]
-    text = st.text_area("Prompt text", ai_service.load_prompt(name), height=360, key=f"prompt_text_{name}")
-    if st.button("💾 Save prompt", key=f"prompt_save_{name}"):
-        ai_service.save_prompt(name, text)
-        st.success(f"Saved prompts/{name}.md. Run a new scan to use it (tick 'Reuse sources' to keep it fast).")
-    source = next((k for k, v in SOURCE_PROMPTS.items() if v == name), None)
-    sample = [x for x in (signals or []) if x["source"] == source][:BATCH_SIZE]
-    if source and sample:
-        with st.expander("Preview: what the model receives for one batch of this source"):
+    st.write("**One prompt drives the whole app.** It has two sections, each starting with its marker on a line of its own: "
+             "`[EXTRACTION]` is used for every source to find the technologies in a batch of signals, and `[RATING]` rates "
+             "each technology from all its evidence and holds the rules (what is Hold, what is too new, when a technology is Adopt). "
+             "`{bbv_context}` is replaced with the bbv description from config.py. Saved changes apply to the next scan.")
+    key = "prompt_text_" + ai_service.prompt_versions()["prompt"]   # a new key after each save, so the box shows the file
+    text = st.text_area("Prompt", ai_service.load_prompt(), height=520, key=key)
+    if st.button("💾 Save prompt", key="prompt_save"):
+        try:
+            ai_service.save_prompt(text)
+            st.success("Saved prompts/prompt.md. Run a new scan to use it (tick 'Reuse sources' to keep it fast).")
+        except ValueError as error:
+            st.error(f"Not saved: {error}")
+    present = [src for src in SOURCES if any(x["source"] == src for x in (signals or []))]
+    if present:
+        with st.expander("Preview: what the model receives for one extraction batch"):
+            source = st.selectbox("Source", present, key="prompt_preview_source")
+            sample = [x for x in signals if x["source"] == source][:BATCH_SIZE]
+            try:
+                system = ai_service.extraction_system(source)
+            except ValueError as error:
+                system = f"(invalid prompt: {error})"
             st.caption("System message")
-            st.code(ai_service.extraction_system(source), language="text")
+            st.code(system, language="text")
             st.caption("User message")
             st.code(f"Items from {source}:\n" + "\n".join(ai_service.format_item(x) for x in sample), language="text")
-    st.caption("The prompts are plain files in the prompts/ folder; `git diff prompts` shows what you changed.")
+    st.caption("The prompt is a plain file, prompts/prompt.md; `git diff prompts` shows what you changed.")
 
 
 # ------------------------------------------------------------------ state
@@ -187,14 +188,12 @@ for i, ring in enumerate(RINGS):
 k[6].metric("✨ New", sum(1 for t in proposed if statuses.get(t["name"]) == "New"))
 
 # Filters (one row, apply to every tab)
-f1, f2, f3 = st.columns([2, 2, 2])
+f1, f2 = st.columns(2)
 quadrant_filter = f1.multiselect("Quadrant", QUADRANTS, default=QUADRANTS)
-relevance_filter = f2.multiselect("Relevance for bbv", ["HIGH", "MEDIUM", "LOW"], default=["HIGH", "MEDIUM", "LOW"])
-search = f3.text_input("Search", placeholder="e.g. rust, agent, kubernetes")
+search = f2.text_input("Search", placeholder="e.g. rust, agent, kubernetes")
 
 shown = [t for t in techs
          if t["quadrant"] in quadrant_filter
-         and t.get("relevance", "LOW") in relevance_filter
          and (not search or search.lower() in (t["name"] + " " + t.get("summary", "") + " " + t.get("reason", "")).lower())]
 
 svg, numbered = radar_html(shown, statuses)

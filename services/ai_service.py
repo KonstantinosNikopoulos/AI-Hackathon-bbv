@@ -1,4 +1,4 @@
-"""Talks to the local LLM (Ollama). Two steps:
+"""Talks to the local LLM (Ollama). One prompt (prompts/prompt.md) drives two steps:
 1. extract_technologies: which technologies do these signals talk about?
 2. classify_technology: which ring should one technology get, and why?
 Both force the answer into a JSON schema, so the model cannot invent other ring names."""
@@ -12,37 +12,57 @@ from config import BBV_CONTEXT, OLLAMA_NUM_THREAD, QUADRANTS, RINGS
 from services import radar_record
 
 PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
+PROMPT_FILE = os.path.join(PROMPT_DIR, "prompt.md")
 
-# One extraction prompt per source (prompts/<file>.md) + shared rules (prompts/_rules.md).
-SOURCE_PROMPTS = {"GitHub": "github", "Y Combinator": "ycombinator", "Hacker News": "hackernews", "RSS feeds": "rss"}
+# ONE prompt for the whole app (prompts/prompt.md), edited in the Prompts tab. It has two sections, each starting with its
+# marker on a line of its own: [EXTRACTION] is the system message of every extraction batch (all sources), [RATING] the
+# system message of every rating call.
+MARKERS = {"extraction": "[EXTRACTION]", "rating": "[RATING]"}
 
-def prompt_path(name):
-    return os.path.join(PROMPT_DIR, f"{name}.md")
+
+def split_prompt(text):
+    """The two sections of the prompt. Raises ValueError when a marker is missing, doubled or a section is empty."""
+    lines = text.splitlines()
+    found = {}
+    for key, marker in MARKERS.items():
+        at = [i for i, line in enumerate(lines) if line.strip() == marker]
+        if len(at) != 1:
+            raise ValueError(f"The prompt needs exactly one line with {marker} (found {len(at)}).")
+        found[key] = at[0]
+    order = sorted(found, key=found.get)
+    sections = {}
+    for i, key in enumerate(order):
+        stop = found[order[i + 1]] if i + 1 < len(order) else len(lines)
+        sections[key] = "\n".join(lines[found[key] + 1:stop]).strip()
+        if not sections[key]:
+            raise ValueError(f"The {MARKERS[key]} section is empty.")
+    return sections
 
 
-def load_prompt(name):
+def load_prompt():
     """Read on every call, so edits in the Prompts tab (or in the file) apply to the next scan."""
-    with open(prompt_path(name), encoding="utf-8") as f:
+    with open(PROMPT_FILE, encoding="utf-8") as f:
         return f.read().strip()
 
 
-def save_prompt(name, text):
-    with open(prompt_path(name), "w", encoding="utf-8") as f:
+def save_prompt(text):
+    split_prompt(text)   # refuse a prompt the scan could not use
+    with open(PROMPT_FILE, "w", encoding="utf-8") as f:
         f.write(text.strip() + "\n")
 
 
 def prompt_versions():
-    """Short fingerprint of every prompt, stored with each run so runs can be compared."""
-    names = list(SOURCE_PROMPTS.values()) + ["_rules", "classify"]
-    return {n: hashlib.md5(load_prompt(n).encode()).hexdigest()[:8] for n in names}
+    """Short fingerprint of the prompt, stored with each run so runs can be compared."""
+    return {"prompt": hashlib.md5(load_prompt().encode()).hexdigest()[:8]}
 
 
-def extraction_system(source):
-    return load_prompt(SOURCE_PROMPTS.get(source, "rss")) + "\n\n" + load_prompt("_rules")
+def extraction_system(source=None):
+    """The same extraction prompt for every source: the user message says which source the items come from."""
+    return split_prompt(load_prompt())["extraction"]
 
 
 def classify_system():
-    return load_prompt("classify").replace("{bbv_context}", BBV_CONTEXT)
+    return split_prompt(load_prompt())["rating"].replace("{bbv_context}", BBV_CONTEXT)
 
 
 def _meta(s, key, default=""):
@@ -156,7 +176,7 @@ class LLM:
 
 
 def extract_technologies(llm, signals, source=None):
-    """signals: items of ONE source, each with a running number 'n'. Uses that source's prompt."""
+    """signals: items of ONE source, each with a running number 'n'. Uses the extraction section of the single prompt."""
     source = source or signals[0]["source"]
     user = f"Items from {source}:\n" + "\n".join(format_item(s) for s in signals)
     result = llm.chat_json(extraction_system(source), user, EXTRACT_SCHEMA)

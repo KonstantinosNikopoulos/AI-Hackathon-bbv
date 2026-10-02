@@ -71,7 +71,7 @@ assert rr.format_facts(candidate(repo(), own=False), TODAY) == \
 print("OK the facts as text: age, stars, last push, license, archived")
 
 # ------------------------------------------------------------------ the rules are in the prompt, and no code changes a ring
-prompt = ai_service.load_prompt("classify")
+prompt = ai_service.classify_system()
 for rule in ("ARCHIVED", "HIGH licensing risk", "last 6 months", "cannot be Adopt or Trial", "Adopt: a technology you know to be a standard",
              "Package registries"):
     assert rule in prompt, rule
